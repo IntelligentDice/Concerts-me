@@ -1,0 +1,6 @@
+requests>=2.28
+pandas>=2.0
+python-dateutil>=2.8
+rapidfuzz>=2.13
+gspread>=5.7      # only needed if using Google Sheets
+oauth2client>=4.1 # only needed for Google Sheets service account
