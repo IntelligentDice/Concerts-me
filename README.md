@@ -1,37 +1,95 @@
-# Concerts-me
-Code to create playlists for concerts I've attended
-# Setlist → Apple Music Playlists
+# Concert Playlist Builder
 
-Creates one Apple Music playlist per concert listed in `events.csv` (or a Google Sheet).
+This project automatically creates Spotify playlists for concerts you've attended by:
+1. Reading your concert history from a Google Sheet  
+2. Fetching full setlists from Setlist.fm  
+3. Building one playlist per concert in Spotify  
+4. Preserving the order of bands and songs played  
+5. Applying fuzzy matching to handle naming differences  
 
-## Requirements
-- GitHub repo with Actions enabled
-- Setlist.fm API key (https://api.setlist.fm/docs)
-- Apple Developer Token (server JWT) and MusicKit User Token for your account
-- events.csv in repo (columns: artist,event_name,venue,city,date) OR Google Sheet
+## Features
+- Google Sheets → Python ingestion  
+- Setlist.fm event → full multi-artist setlist extraction  
+- Spotify OAuth with refresh token for long-term use  
+- Automatic creation of playlists named:  
+  **{Artist} — {Venue}, {City} ({Date})**
+- Validation of events with warnings for missing setlist data  
+- Multi-artist support (openers + headliners)
 
-## Install Apple tokens
-1. **Developer token**: create an Apple Music API key in your Apple Developer account. Create a JWT (developer token). Store as `APPLE_DEVELOPER_TOKEN`.
-2. **User token**: use MusicKit JS or an existing flow to obtain a MusicKit user token for your Apple ID. Store as `APPLE_USER_TOKEN`.
-  - You can generate a user token through a front-end MusicKit auth flow. (This token is required to create playlists in the user's library.)
+---
 
-## GitHub Secrets
-Add these:
-- `SETLIST_API_KEY` — your setlist.fm API key
-- `APPLE_DEVELOPER_TOKEN` — your server JWT
-- `APPLE_USER_TOKEN` — MusicKit user token
-- Optional for Google Sheets:
-  - `USE_GOOGLE_SHEET` = "true"
-  - `GOOGLE_SHEET_ID`
-  - `GOOGLE_SERVICE_ACCOUNT_JSON` — the raw JSON (if you want Actions to authenticate with service account)
+# Setup Instructions
 
-## Usage
-1. Add events to `events.csv` or Google Sheet.
-2. In GitHub Actions, run the **Generate Apple Music Playlists (Manual)** workflow.
-3. The job will create one playlist per concert and add tracks found on Apple Music.
+## 1. Google Sheets Setup
+Create a Google Sheet with columns:
 
-## Notes & troubleshooting
-- Matching is fuzzy; if you see mismatches, edit your CSV to include exact artist names or alternate venues.
-- Apple Music matching can fail for live-only tracks or rare tracks; the script will skip unmatched songs.
-- No scheduling is configured; the workflow runs only when manually triggered.
+```
+artist,event_name,venue,city,date
+```
 
+Ensure you share the Sheet with your Google Cloud service account email once created.
+
+---
+
+## 2. Create Spotify API App
+Go to: https://developer.spotify.com/dashboard  
+
+Create an app, then fill these fields:
+
+- **Client ID**
+- **Client Secret**
+- Add a redirect URI: `http://localhost:8080/callback`
+
+Copy them into `config.json`.
+
+---
+
+## 3. Setlist.fm API
+Create an API key here:  
+https://www.setlist.fm/account/settings/api  
+
+Copy your key into `config.json`.
+
+---
+
+## 4. Install Dependencies
+```
+pip install -r requirements.txt
+```
+
+---
+
+## 5. Run OAuth Flow to Get Long-Term Spotify Refresh Token
+```
+python oauth.py
+```
+
+Follow instructions. Copy the refresh token into `config.json`.
+
+---
+
+## 6. Main Script
+```
+python main.py
+```
+
+---
+
+# File Structure
+
+```
+.
+│── README.md
+│── requirements.txt
+│── main.py
+│── playlist_builder.py
+│── spotify_api.py
+│── setlistfm_api.py
+│── google_sheets.py
+│── oauth.py
+│── config.example.json
+│── utils/
+│     ├── logging_utils.py
+│     └── fuzzy_utils.py
+│── .gitignore
+```
