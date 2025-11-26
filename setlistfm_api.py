@@ -1,61 +1,156 @@
+# setlistfm_api.py
 import requests
-import logging
+from rapidfuzz import fuzz
 from datetime import datetime
 
 
-def find_event_setlist(artist, date, api_key):
+BASE_URL = "https://api.setlist.fm/rest/1.0"
+
+
+class SetlistFM:
     """
-    Query Setlist.fm for an artist + date.
-    Returns: list of {"title": song_title}
+    Minimal Setlist.fm client optimized for:
+    - Finding the correct event for (artist + date)
+    - Extracting openers + headliner
+    - Extracting song lists per act
     """
 
-    base = "https://api.setlist.fm/rest/1.0/search/setlists"
-    headers = {
-        "x-api-key": api_key,
-        "Accept": "application/json"
-    }
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.headers = {"x-api-key": api_key, "Accept": "application/json"}
 
-    # Convert date to datetime
-    if isinstance(date, str):
-        try:
-            date_obj = datetime.fromisoformat(date)
-        except Exception:
-            logging.warning(f"Invalid date format passed to find_event_setlist: {date}")
+    # -----------------------------
+    # Core: Search by artist + date
+    # -----------------------------
+    def find_event_setlist(self, artist: str, date: str):
+        """
+        Search Setlist.fm for the correct event for this artist + date.
+        Returns structured dict:
+        {
+            "headliner": "Band Name",
+            "headliner_songs": [...],
+            "openers": [
+                {"name": opener_name, "songs": [...]},
+                ...
+            ]
+        }
+        """
+
+        search_params = {
+            "artistName": artist,
+            "date": self._to_setlistfm_date(date),  # DD-MM-YYYY
+        }
+
+        r = requests.get(f"{BASE_URL}/search/setlists",
+                         headers=self.headers, params=search_params, timeout=15)
+
+        if r.status_code != 200:
             return None
-    else:
-        date_obj = date
 
-    # Required Setlist.fm format = DD-MM-YYYY
-    formatted_date = date_obj.strftime("%d-%m-%Y")
+        data = r.json()
+        candidates = data.get("setlist", [])
+        if not candidates:
+            return None
 
-    params = {
-        "artistName": artist,
-        "date": formatted_date
-    }
+        best = self._pick_best_match(candidates, artist, date)
+        if not best:
+            return None
 
-    try:
-        resp = requests.get(base, headers=headers, params=params, timeout=10)
-        resp.raise_for_status()
-    except Exception as e:
-        logging.warning(f"Setlist.fm request failed for {artist} on {formatted_date}: {e}")
-        return None
+        # Extract headliner + opener content
+        return self._extract_full_event(best)
 
-    data = resp.json()
+    # ---------------------------------------------------------
+    # Helpers
+    # ---------------------------------------------------------
+    def _to_setlistfm_date(self, date_str: str) -> str:
+        """Convert YYYY-MM-DD → DD-MM-YYYY."""
+        dt = datetime.fromisoformat(date_str)
+        return dt.strftime("%d-%m-%Y")
 
-    if "setlist" not in data or not data["setlist"]:
-        return None
+    def _pick_best_match(self, candidates, artist, date):
+        """
+        Fuzzy rank all candidate setlists to find the best matching event.
+        """
+        best_score = -1
+        best_item = None
 
-    # Get first matching setlist
-    s = data["setlist"][0]
-    songs_out = []
+        for c in candidates:
+            score = 0
 
-    # Navigate: setlist -> sets -> set -> song
-    sets = s.get("sets", {}).get("set", [])
+            # Compare artists
+            cand_artist = c.get("artist", {}).get("name", "")
+            score += fuzz.token_set_ratio(artist, cand_artist) * 2
 
-    for set_block in sets:
-        for song in set_block.get("song", []):
-            title = song.get("name")
-            if title:
-                songs_out.append({"title": title})
+            # Compare date
+            event_date = c.get("eventDate", "")
+            if event_date:
+                try:
+                    dt = datetime.strptime(event_date, "%d-%m-%Y").date()
+                    if str(dt) == date:
+                        score += 50
+                except Exception:
+                    pass
 
-    return songs_out
+            if score > best_score:
+                best_score = score
+                best_item = c
+
+        # Require a basic confidence threshold
+        if best_score < 40:
+            return None
+
+        return best_item
+
+    # ---------------------------------------------------------
+    # Extract full event details: opener names + songs, headliner songs
+    # ---------------------------------------------------------
+    def _extract_full_event(self, setlist):
+        artist_name = setlist.get("artist", {}).get("name", "")
+
+        sets = setlist.get("sets", {}).get("set", [])
+        if not isinstance(sets, list):
+            sets = [sets]
+
+        headliner_songs = []
+        openers = []
+        opener_seen = set()
+
+        for block in sets:
+            block_name = (block.get("name") or "").strip()
+
+            # Song list in this block
+            block_songs_raw = block.get("song", []) or []
+            if not isinstance(block_songs_raw, list):
+                block_songs_raw = [block_songs_raw]
+            block_songs = []
+            for s in block_songs_raw:
+                if isinstance(s, dict) and s.get("name"):
+                    block_songs.append(s["name"])
+                elif isinstance(s, str):
+                    block_songs.append(s)
+
+            # Determine if block is opener
+            if block_name and block_name.lower() not in ("main", "main set", "encore"):
+                # opener block
+                if block_name.lower() not in opener_seen:
+                    openers.append({"name": block_name, "songs": block_songs})
+                    opener_seen.add(block_name.lower())
+                continue
+
+            # Otherwise headliner block
+            headliner_songs.extend(block_songs)
+
+        # Also parse support list
+        supports = setlist.get("artist", {}).get("support", []) or []
+        for sup in supports:
+            sup_name = sup.get("name", "").strip()
+            if sup_name and sup_name.lower() not in opener_seen:
+                # no opener-specific songs known; fallback to empty list
+                openers.append({"name": sup_name, "songs": []})
+                opener_seen.add(sup_name.lower())
+
+        return {
+            "headliner": artist_name,
+            "headliner_songs": headliner_songs,
+            "openers": openers
+        }
