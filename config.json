@@ -1,0 +1,14 @@
+{
+  "spotify": {
+    "client_id": "5fb94130f17b4e7fa1574876882946ed",
+    "client_secret": "39e60f7f6aea453ca337ec3c65982e62",
+    "redirect_uri": "http://127.0.0.1:8080/callback",
+    "refresh_token": "AQCvI-8Kk1sYVc__X620eKbhoE9i7rN-yS1oGS86QAI1n9WVamayayrIaCfiIU_m0HKPYZ8bJzoLzkMqBN3m6BWqplN492Iw-Q6oV5q95x9gGxUlXfVILLrLJ4ixP8QnQzM"
+  },
+  "google": {
+    "sheet_id": "1bZeSZlG_2_7RSRzGfKyFyXdunypeLCJnlqQxGKPDRSE"
+  },
+  "setlistfm": {
+    "api_key": "jDZoh2u_BN__1FZdZx6S3ZlVxezSxclx_uxL"
+  }
+}
