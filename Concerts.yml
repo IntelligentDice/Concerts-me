@@ -1,48 +1,55 @@
-name: HOA Social Automation
+name: Run Concerts-me Pipeline
 
 on:
-  schedule:
-    - cron: "0 * * * *"  # every hour
-  workflow_dispatch:
-
+  workflow_dispatch:   # manual run from Actions UI
+  
 jobs:
-  run-automation:
+  build-and-run:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: "3.11"
 
       - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+
+      - name: Write Google service account JSON to file
+        env:
+          SA_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -z "$SA_JSON" ]; then
+            echo "ERROR: GOOGLE_SERVICE_ACCOUNT_JSON secret is empty" >&2
+            exit 1
+          fi
+          echo "$SA_JSON" > service_account.json
+          chmod 600 service_account.json
+          echo "Wrote service_account.json (from secret)"
 
-      # -------------------------
-      # 🔐 Inject Secrets as Files/Env Vars
-      # -------------------------
-
-      - name: Write Google Service Account JSON
+      - name: Export minimal required env vars
+        env:
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SETLIST_FM_API_KEY: ${{ secrets.SETLIST_FM_API_KEY }}
         run: |
-          echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}" > google_sa.json
+          echo "SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}" >> $GITHUB_ENV
+          echo "SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}" >> $GITHUB_ENV
+          echo "SPOTIFY_REFRESH_TOKEN=${SPOTIFY_REFRESH_TOKEN}" >> $GITHUB_ENV
+          echo "SETLIST_FM_API_KEY=${SETLIST_FM_API_KEY}" >> $GITHUB_ENV
+          # point Google client libraries to the service account file
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/service_account.json" >> $GITHUB_ENV
 
-      - name: Export API keys and config
-        run: |
-          echo "GOOGLE_APPLICATION_CREDENTIALS=$GITHUB_WORKSPACE/google_sa.json" >> $GITHUB_ENV
-          echo "GOOGLE_CALENDAR_ID=${{ secrets.GOOGLE_CALENDAR_ID }}" >> $GITHUB_ENV
-          echo "GOOGLE_DRIVE_FOLDER_ID=${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}" >> $GITHUB_ENV
-          echo "GMAIL_SENDER=${{ secrets.GMAIL_SENDER }}" >> $GITHUB_ENV
-          echo "FACEBOOK_PAGE_ID=${{ secrets.FACEBOOK_PAGE_ID }}" >> $GITHUB_ENV
-          echo "FACEBOOK_PAGE_ACCESS_TOKEN=${{ secrets.FACEBOOK_PAGE_ACCESS_TOKEN }}" >> $GITHUB_ENV
-          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> $GITHUB_ENV
-
-      # -------------------------
-      # ▶️ RUN PYTHON AUTOMATION
-      # -------------------------
-      - name: Run automation script
+      - name: Run Concerts-me script
+        env:
+          # main.py/other scripts can still read config.json if you prefer; we expose the secrets as env vars too
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SETLIST_FM_API_KEY: ${{ secrets.SETLIST_FM_API_KEY }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/service_account.json
         run: python main.py
