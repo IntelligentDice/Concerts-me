@@ -1,24 +1,22 @@
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+# google_sheets.py
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+class GoogleSheets:
+    def __init__(self, sheet_id, service_account_json):
+        self.sheet_id = sheet_id
+        creds_dict = json.loads(service_account_json)
 
-def load_sheet(sheet_id):
-    creds = service_account.Credentials.from_service_account_file(
-        "google_service_account.json", scopes=SCOPES
-    )
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
 
-    service = build("sheets", "v4", credentials=creds)
-    sheet = service.spreadsheets()
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        self.sheet = client.open_by_key(sheet_id).sheet1
 
-    result = sheet.values().get(
-        spreadsheetId=sheet_id, range="Sheet1"
-    ).execute()
-
-    rows = result.get("values", [])
-    if not rows:
-        return []
-
-    headers = rows[0]
-    data = [dict(zip(headers, row)) for row in rows[1:]]
-    return data
+    def get_artists(self):
+        data = self.sheet.col_values(1)
+        return [a for a in data if a.strip()]
