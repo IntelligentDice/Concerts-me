@@ -1,36 +1,27 @@
+# main.py
 import json
 from google_sheets import load_sheet
-from setlistfm_api import find_event_setlist
-from spotify_api import get_spotify_client
-from playlist_builder import build_playlist
-from utils.logging_utils import log, warn
+from playlist_builder import build_playlist_for_event
+from pathlib import Path
+
+CFG_PATH = Path("config.json")
+
+def load_config():
+    return json.loads(CFG_PATH.read_text(encoding="utf8"))
 
 def main():
-    log("Loading config...")
-    with open("config.json") as f:
-        cfg = json.load(f)
+    cfg = load_config()
+    sheet_id = cfg.get("google", {}).get("sheet_id")
+    if not sheet_id:
+        raise SystemExit("Please set google.sheet_id in config.json")
 
-    log("Loading Google Sheet...")
-    events = load_sheet(cfg["google_sheet_id"])
+    rows = load_sheet(sheet_id)  # returns list of dicts with artist,venue,city,date
+    setlist_key = cfg.get("setlistfm", {}).get("api_key")
+    if not setlist_key:
+        raise SystemExit("Please set setlistfm.api_key in config.json")
 
-    log(f"Loaded {len(events)} events")
-
-    sp = get_spotify_client()
-
-    for ev in events:
-        log(f"Processing: {ev['artist']} — {ev['date']}")
-
-        setlist = find_event_setlist(
-            ev["artist"], ev["venue"], ev["date"], cfg["setlistfm_api_key"]
-        )
-
-        if not setlist:
-            warn(f"No setlist found for {ev['artist']} on {ev['date']}")
-            continue
-
-        build_playlist(sp, ev, setlist)
-
-    log("Done!")
+    for row in rows:
+        build_playlist_for_event(row, setlist_key)
 
 if __name__ == "__main__":
     main()
