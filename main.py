@@ -1,42 +1,49 @@
 # main.py
-import logging
-from config import load_config
+import os
 from spotify_client import SpotifyClient
-from setlistfm_client import SetlistFMClient
 from google_sheets import GoogleSheets
+from playlist_builder import PlaylistBuilder
 
-logging.basicConfig(level=logging.INFO)
+def get_env(name, default=None, required=False):
+    val = os.getenv(name, default)
+    if required and val is None:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return val
+
+def load_config():
+    return {
+        "spotify": {
+            "client_id": get_env("SPOTIFY_CLIENT_ID", required=True),
+            "client_secret": get_env("SPOTIFY_CLIENT_SECRET", required=True),
+            "refresh_token": get_env("SPOTIFY_REFRESH_TOKEN", required=True),
+            "redirect_uri": get_env("SPOTIFY_REDIRECT_URI", "http://localhost:8080/callback"),
+        },
+        "google": {
+            "sheet_id": get_env("GOOGLE_SHEET_ID"),
+            "service_account_json": get_env("GOOGLE_SERVICE_ACCOUNT_JSON"),
+        },
+        "setlistfm": {
+            "api_key": get_env("SETLIST_FM_API_KEY", required=True)
+        }
+    }
 
 def main():
-    cfg = load_config()
+    config = load_config()
 
     spotify = SpotifyClient(
-        client_id=cfg["spotify"]["client_id"],
-        client_secret=cfg["spotify"]["client_secret"],
-        refresh_token=cfg["spotify"]["refresh_token"],
-        redirect_uri=cfg["spotify"]["redirect_uri"]
+        client_id=config["spotify"]["client_id"],
+        client_secret=config["spotify"]["client_secret"],
+        refresh_token=config["spotify"]["refresh_token"],
+        redirect_uri=config["spotify"]["redirect_uri"]
     )
 
-    setlistfm = SetlistFMClient(api_key=cfg["setlistfm"]["api_key"])
-
-    sheets = GoogleSheets(
-        sheet_id=cfg["google"]["sheet_id"],
-        service_account_json=cfg["google"]["service_account_json"]
+    gs = GoogleSheets(
+        service_account_json=config["google"]["service_account_json"],
+        sheet_id=config["google"]["sheet_id"]
     )
 
-    logging.info("Fetching artist list from Google Sheets…")
-    artists = sheets.get_artists()
-
-    logging.info("Collecting songs from Setlist.fm…")
-    songs = setlistfm.get_songs_from_artists(artists)
-
-    logging.info("Ensuring tracks exist on Spotify…")
-    track_ids = spotify.ensure_tracks_exist(songs)
-
-    logging.info("Updating Spotify playlist…")
-    spotify.update_playlist(track_ids)
-
-    logging.info("Process completed successfully.")
+    pb = PlaylistBuilder(spotify, gs, config["setlistfm"]["api_key"])
+    pb.run()
 
 if __name__ == "__main__":
     main()
