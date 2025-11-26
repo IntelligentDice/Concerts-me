@@ -60,4 +60,57 @@ class PlaylistBuilder:
     def _build_playlist_for_event(self, artist, date, songs):
         log(f"Building playlist for {artist} - {date}")
 
-        user_id = self.spotify.get_current_user_
+        user_id = self.spotify.get_current_user_id()
+
+        playlist_name = f"{artist} - {date}"
+        playlist_id = create_playlist(
+            user_id,
+            playlist_name,
+            public=False,
+            description="Auto-generated concert playlist"
+        )
+
+        track_uris = []
+        for title, artist_hint in songs:
+            uri, score = _best_spotify_match_for_song(title, artist_hint)
+            if uri:
+                track_uris.append(uri)
+            else:
+                warn(f"Could not match: {title} (artist hint: {artist_hint})")
+
+        if track_uris:
+            add_tracks_to_playlist(playlist_id, track_uris)
+            log(f"Created playlist {playlist_name} with {len(track_uris)} tracks")
+            return playlist_id
+
+        warn("No tracks added to playlist")
+        return None
+
+    def run(self):
+        """
+        Main entrypoint called by main.py
+        """
+        events = self.sheets.read_events()
+
+        for index, event in enumerate(events):
+            artist = event.get("artist")
+            date = event.get("date")
+
+            if not artist or not date:
+                warn(f"Skipping row {index}: missing artist/date")
+                continue
+
+            # Query Setlist.fm ― returns list of {"title": ...}
+            songs = find_event_setlist(artist, date, self.setlist_api_key)
+
+            if not songs:
+                warn(f"No setlist found for {artist} {date}")
+                continue
+
+            # Normalize to (song_title, artist_hint)
+            songs = [(song["title"], artist) for song in songs]
+
+            playlist_id = self._build_playlist_for_event(artist, date, songs)
+            if playlist_id:
+                playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+                self.sheets.write_playlist_link(index, playlist_url)
