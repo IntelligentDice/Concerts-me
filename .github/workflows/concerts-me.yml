@@ -1,6 +1,8 @@
 name: run-concerts-me
 
 on:
+  schedule:
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
@@ -8,28 +10,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Check out repo
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install requirements
         run: pip install -r requirements.txt
 
-      - name: Write Google Service Account file
-        run: |
-          echo "$GOOGLE_SERVICE_CREDS" > service_account.json
-
-      - name: Write config.json
-        run: |
-          echo "$CONFIG_JSON" > config.json
-
-      - name: Run python main.py
+      - name: Run script
         env:
-          GOOGLE_SERVICE_CREDS: ${{ secrets.GOOGLE_SERVICE_CREDS }}
-          CONFIG_JSON: ${{ secrets.CONFIG_JSON }}
-        run: |
-          python main.py
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SPOTIFY_REFRESH_TOKEN: ${{ secrets.SPOTIFY_REFRESH_TOKEN }}
+          SETLIST_FM_API_KEY: ${{ secrets.SETLIST_FM_API_KEY }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: python main.py
