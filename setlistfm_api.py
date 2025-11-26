@@ -1,116 +1,61 @@
-From 6c677d2db260a9be3f89b97fb6c5e1ed0b224fd4 Mon Sep 17 00:00:00 2001
-From: ChatGPT <assistant@example.com>
-Date: Thu, 26 Nov 2025 17:00:00 -0500
-Subject: Fix Setlist.fm integration and song extraction
+import requests
+import logging
+from datetime import datetime
 
----
- playlist_builder.py | 14 +++++++-------
- setlistfm_api.py    | 55 +++++++++++++++++++++++++++++++++++++++-------------
- 2 files changed, 47 insertions(+), 22 deletions(-)
 
-diff --git a/playlist_builder.py b/playlist_builder.py
-index 2f8aa12..fe32dc9 100644
---- a/playlist_builder.py
-+++ b/playlist_builder.py
-@@ -69,14 +69,16 @@ class PlaylistBuilder:
-             # pull from Setlist.fm
--            setlist = find_event_setlist(artist, date, self.setlist_api_key)
--            if not setlist:
-+            songs = find_event_setlist(artist, date, self.setlist_api_key)
-+
-+            if not songs:
-                 warn(f"No setlist found for {artist} {date}")
-                 continue
- 
--            songs = [(song["title"], artist) for song in setlist]
-+            # songs now is already a list of {"title": ...}
-+            songs = [(song["title"], artist) for song in songs]
+def find_event_setlist(artist, date, api_key):
+    """
+    Query Setlist.fm for an artist + date.
+    Returns: list of {"title": song_title}
+    """
 
-             playlist_id = self._build_playlist_for_event(artist, date, songs)
-             if playlist_id:
-                 playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
-                 self.sheets.write_playlist_link(index, playlist_url)
-diff --git a/setlistfm_api.py b/setlistfm_api.py
-index 6be77e8..d87cb0e 100644
---- a/setlistfm_api.py
-+++ b/setlistfm_api.py
-@@ -1,16 +1,51 @@
- import requests
-+import logging
-+from datetime import datetime
+    base = "https://api.setlist.fm/rest/1.0/search/setlists"
+    headers = {
+        "x-api-key": api_key,
+        "Accept": "application/json"
+    }
 
--def find_event_setlist(artist, venue, date, api_key):
--    base = "https://api.setlist.fm/rest/1.0/search/setlists"
--    headers = {"x-api-key": api_key, "Accept": "application/json"}
--
--    params = {
--        "artistName": artist,
--        "venueName": venue,
--        "date": date.replace("-", "")
--    }
--
--    r = requests.get(base, headers=headers, params=params)
--    if r.status_code != 200:
--        return None
--
--    data = r.json()
--    if "setlist" not in data or len(data["setlist"]) == 0:
--        return None
--
--    return data["setlist"][0]
-+def find_event_setlist(artist, date, api_key):
-+    """
-+    Queries Setlist.fm for a given artist + date.
-+    Returns a list of {"title": song_title}.
-+    """
-+
-+    base = "https://api.setlist.fm/rest/1.0/search/setlists"
-+    headers = {
-+        "x-api-key": api_key,
-+        "Accept": "application/json"
-+    }
-+
-+    # date expected as datetime or ISO string
-+    if isinstance(date, str):
-+        try:
-+            date_obj = datetime.fromisoformat(date)
-+        except Exception:
-+            logging.warning(f"Invalid date format passed to find_event_setlist: {date}")
-+            return None
-+    else:
-+        date_obj = date
-+
-+    # Setlist.fm expects DD-MM-YYYY
-+    formatted_date = date_obj.strftime("%d-%m-%Y")
-+
-+    params = {
-+        "artistName": artist,
-+        "date": formatted_date
-+    }
-+
-+    try:
-+        resp = requests.get(base, headers=headers, params=params, timeout=10)
-+        resp.raise_for_status()
-+    except Exception as e:
-+        logging.warning(f"Setlist.fm request failed for {artist} on {formatted_date}: {e}")
-+        return None
-+
-+    data = resp.json()
-+    if "setlist" not in data or not data["setlist"]:
-+        return None
-+
-+    # Use the first matching setlist
-+    s = data["setlist"][0]
-+    songs_out = []
-+
-+    # Setlist structure: setlist -> sets -> set -> song
-+    sets = s.get("sets", {}).get("set", [])
-+    for set_block in sets:
-+        for song in set_block.get("song", []):
-+            title = song.get("name")
-+            if title:
-+                songs_out.append({"title": title})
-+
-+    return songs_out
---
-2.44.0
+    # Convert date to datetime
+    if isinstance(date, str):
+        try:
+            date_obj = datetime.fromisoformat(date)
+        except Exception:
+            logging.warning(f"Invalid date format passed to find_event_setlist: {date}")
+            return None
+    else:
+        date_obj = date
+
+    # Required Setlist.fm format = DD-MM-YYYY
+    formatted_date = date_obj.strftime("%d-%m-%Y")
+
+    params = {
+        "artistName": artist,
+        "date": formatted_date
+    }
+
+    try:
+        resp = requests.get(base, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+    except Exception as e:
+        logging.warning(f"Setlist.fm request failed for {artist} on {formatted_date}: {e}")
+        return None
+
+    data = resp.json()
+
+    if "setlist" not in data or not data["setlist"]:
+        return None
+
+    # Get first matching setlist
+    s = data["setlist"][0]
+    songs_out = []
+
+    # Navigate: setlist -> sets -> set -> song
+    sets = s.get("sets", {}).get("set", [])
+
+    for set_block in sets:
+        for song in set_block.get("song", []):
+            title = song.get("name")
+            if title:
+                songs_out.append({"title": title})
+
+    return songs_out
