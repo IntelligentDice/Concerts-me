@@ -1,27 +1,22 @@
-import json
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+# spotify_api.py
+from spotify_client import get, post
+from typing import List, Dict
 
-def get_spotify_client():
-    with open("config.json") as f:
-        cfg = json.load(f)
+def get_current_user_id() -> str:
+    res = get("/me")
+    return res["id"]
 
-    oauth = SpotifyOAuth(
-        client_id=cfg["spotify_client_id"],
-        client_secret=cfg["spotify_client_secret"],
-        redirect_uri=cfg["redirect_uri"],
-        scope="playlist-modify-private playlist-modify-public",
-    )
+def search_track(query: str, limit: int = 5) -> List[Dict]:
+    res = get("/search", params={"q": query, "type": "track", "limit": limit})
+    return res.get("tracks", {}).get("items", [])
 
-    token = oauth.refresh_access_token(cfg["spotify_refresh_token"])
-    sp = spotipy.Spotify(auth=token["access_token"])
-    return sp
+def create_playlist(user_id: str, name: str, description: str = "") -> str:
+    payload = {"name": name, "description": description, "public": False}
+    res = post(f"/users/{user_id}/playlists", payload)
+    return res["id"]
 
-def create_playlist(sp, name, description=""):
-    user = sp.current_user()["id"]
-    playlist = sp.user_playlist_create(user, name, public=False, description=description)
-    return playlist["id"]
-
-def add_tracks(sp, playlist_id, track_ids):
-    if track_ids:
-        sp.playlist_add_items(playlist_id, track_ids)
+def add_tracks_to_playlist(playlist_id: str, track_uris: List[str]):
+    # Spotify accepts up to 100 at a time
+    for i in range(0, len(track_uris), 100):
+        batch = track_uris[i:i+100]
+        post(f"/playlists/{playlist_id}/tracks", {"uris": batch})
