@@ -77,3 +77,34 @@ class SpotifyClient:
             raise RuntimeError("Playlist update failed")
 
         logging.info("Playlist updated successfully.")
+
+    def _request(self, method, url, headers=None, params=None, data=None, json=None):
+        """Generic request handler for use by SpotifyAPI wrapper."""
+        import requests
+
+        if not headers:
+            headers = self._auth_headers()
+
+        response = requests.request(
+            method=method,
+            url=url,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json
+        )
+
+        # Auto-refresh on 401 (expired token)
+        if response.status_code == 401:
+            self._refresh_access_token()
+            headers = self._auth_headers()
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=headers,
+                params=params,
+                data=data,
+                json=json
+            )
+
+        return response
