@@ -1,35 +1,79 @@
 # spotify_client.py
 import requests
-from typing import Dict, Any, List
-from spotify_auth import get_access_token
+import logging
+import base64
 
-BASE = "https://api.spotify.com/v1"
+class SpotifyClient:
+    def __init__(self, client_id, client_secret, refresh_token, redirect_uri):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.refresh_token = refresh_token
+        self.redirect_uri = redirect_uri
+        self.access_token = None
 
-def _auth_header():
-    token = get_access_token()
-    return {"Authorization": f"Bearer {token}"}
+    def _refresh_access_token(self):
+        logging.info("Refreshing Spotify access token…")
 
-def _request(method: str, path: str, **kwargs) -> Any:
-    url = BASE + path
-    headers = kwargs.pop("headers", {})
-    headers.update(_auth_header())
-    r = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+        auth_header = base64.b64encode(
+            f"{self.client_id}:{self.client_secret}".encode()
+        ).decode()
 
-    # retry once on 401
-    if r.status_code == 401:
-        headers.update(_auth_header())  # refresh and retry
-        r = requests.request(method, url, headers=headers, timeout=15, **kwargs)
+        response = requests.post(
+            "https://accounts.spotify.com/api/token",
+            headers={"Authorization": f"Basic {auth_header}"},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": self.refresh_token
+            }
+        )
 
-    r.raise_for_status()
-    if r.status_code == 204:
+        if response.status_code != 200:
+            logging.error("Failed to refresh token: %s", response.text)
+            raise RuntimeError("Spotify token refresh failed")
+
+        data = response.json()
+        self.access_token = data["access_token"]
+
+    def _auth_headers(self):
+        if not self.access_token:
+            self._refresh_access_token()
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    def search_track(self, artist, title):
+        query = f"track:{title} artist:{artist}"
+        response = requests.get(
+            "https://api.spotify.com/v1/search",
+            headers=self._auth_headers(),
+            params={"q": query, "type": "track", "limit": 1}
+        )
+
+        items = response.json().get("tracks", {}).get("items", [])
+        if items:
+            return items[0]["id"]
         return None
-    return r.json()
 
-def get(path: str, params: Dict[str, Any] = None):
-    return _request("GET", path, params=params)
+    def ensure_tracks_exist(self, songs):
+        track_ids = []
 
-def post(path: str, payload: Dict[str, Any]):
-    return _request("POST", path, json=payload)
+        for song in songs:
+            tid = self.search_track(song["artist"], song["title"])
+            if tid:
+                track_ids.append(tid)
 
-def put(path: str, payload: Dict[str, Any]):
-    return _request("PUT", path, json=payload)
+        return track_ids
+
+    def update_playlist(self, track_ids):
+        playlist_id = "YOUR_PLAYLIST_ID"  # Hard-coded or move to env if needed
+        url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+
+        response = requests.put(
+            url,
+            headers=self._auth_headers(),
+            json={"uris": [f"spotify:track:{tid}" for tid in track_ids]}
+        )
+
+        if response.status_code not in (200, 201):
+            logging.error("Failed to update playlist: %s", response.text)
+            raise RuntimeError("Playlist update failed")
+
+        logging.info("Playlist updated successfully.")
