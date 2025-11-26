@@ -1,0 +1,20 @@
+{
+  "calendar_ids": {
+    "events": "hoa-events-calendar-id",
+    "reminders": "hoa-reminders-calendar-id"
+  },
+  "posting": {
+    "default_times": ["08:00", "12:00", "17:00"],
+    "timezone": "America/New_York"
+  },
+  "content_rules": {
+    "max_post_length": 600,
+    "tone": "friendly",
+    "include_hashtags": true
+  },
+  "features": {
+    "auto_reply": false,
+    "summaries": true,
+    "calendar_push": true
+  }
+}
