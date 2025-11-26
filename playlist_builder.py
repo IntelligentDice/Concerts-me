@@ -99,14 +99,10 @@ class PlaylistBuilder:
                 continue
 
             # pull from Setlist.fm
-            setlist = find_event_setlist(artist, date, self.setlist_api_key)
-            if not setlist:
-                warn(f"No setlist found for {artist} {date}")
-                continue
+            songs = find_event_setlist(artist, date, self.setlist_api_key)
 
-            songs = [(song["title"], artist) for song in setlist]
+if not songs:
+    warn(f"No setlist found for {artist} {date}")
+    continue
 
-            playlist_id = self._build_playlist_for_event(artist, date, songs)
-            if playlist_id:
-                playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
-                self.sheets.write_playlist_link(index, playlist_url)
+songs = [(song["title"], artist) for song in songs]
