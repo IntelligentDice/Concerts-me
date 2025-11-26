@@ -1,0 +1,14 @@
+{
+  "spotify": {
+    "client_id": "YOUR_SPOTIFY_CLIENT_ID",
+    "client_secret": "YOUR_SPOTIFY_CLIENT_SECRET",
+    "redirect_uri": "http://127.0.0.1:8080/callback",
+    "refresh_token": "YOUR_SPOTIFY_REFRESH_TOKEN"
+  },
+  "google": {
+    "sheet_id": "YOUR_GOOGLE_SHEET_ID"
+  },
+  "setlistfm": {
+    "api_key": "YOUR_SETLISTFM_API_KEY"
+  }
+}
