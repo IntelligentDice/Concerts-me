@@ -1,9 +1,20 @@
+# Google APIs
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
+
+# Spotify API
 spotipy
+
+# Sheets & Drive integrations
+gspread
+
+# HTTP & Utility
 requests
 python-dotenv
+
+# Fuzzy matching
 fuzzywuzzy
 python-Levenshtein
+
