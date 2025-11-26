@@ -1,76 +1,40 @@
-import json
-import time
-import base64
-import requests
+# spotify_auth.py
+import json, time, base64, requests
 from pathlib import Path
 
-# Path to your config file (adjust if needed)
 CONFIG_PATH = Path("config.json")
-
-# Cached token so your app doesn't hit Spotify every time
-_cached_access_token = None
+_cached_token = None
 _cached_expiry = 0
 
-
-def _load_config():
-    """Load client credentials and refresh token from config.json."""
+def _load_spotify_config():
     if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"config.json not found at: {CONFIG_PATH.resolve()}"
-        )
+        raise FileNotFoundError("config.json not found; copy config.template.json -> config.json and fill credentials")
+    cfg = json.loads(CONFIG_PATH.read_text(encoding="utf8"))
+    sp = cfg.get("spotify", {})
+    req = ["client_id", "client_secret", "refresh_token"]
+    for k in req:
+        if not sp.get(k):
+            raise ValueError(f"Missing spotify.{k} in config.json")
+    return sp
 
-    with open(CONFIG_PATH, "r") as f:
-        config = json.load(f)
-
-    required = ["client_id", "client_secret", "refresh_token"]
-    for key in required:
-        if key not in config or not config[key]:
-            raise ValueError(f"Missing required field in config.json: '{key}'")
-
-    return config
-
-
-def _request_new_access_token(client_id, client_secret, refresh_token):
-    """Call Spotify and exchange refresh token for new access token."""
-    token_url = "https://accounts.spotify.com/api/token"
-
-    # Spotify requires client_id:client_secret base64 encoded
-    auth_header = base64.b64encode(
-        f"{client_id}:{client_secret}".encode()
-    ).decode()
-
-    headers = {
-        "Authorization": f"Basic {auth_header}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token
-    }
-
-    response = requests.post(token_url, headers=headers, data=data)
-
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Failed to refresh Spotify token: {response.status_code} — {response.text}"
-        )
-
-    payload = response.json()
-
-    if "access_token" not in payload:
-        raise RuntimeError(
-            f"Spotify response missing access token: {payload}"
-        )
-
-    access_token = payload["access_token"]
-    expires_in = payload.get("expires_in", 3600)  # seconds
-
-    return access_token, expires_in
-
+def _refresh_access_token(client_id, client_secret, refresh_token):
+    url = "https://accounts.spotify.com/api/token"
+    auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    headers = {"Authorization": f"Basic {auth}"}
+    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    r = requests.post(url, data=data, headers=headers, timeout=15)
+    r.raise_for_status()
+    payload = r.json()
+    return payload["access_token"], payload.get("expires_in", 3600)
 
 def get_access_token():
-    """
-    Returns a valid Spotify access token.
+    global _cached_token, _cached_expiry
+    now = time.time()
+    if _cached_token and now < _cached_expiry:
+        return _cached_token
 
-    - Uses cached token if still val
+    sp = _load_spotify_config()
+    token, expires_in = _refresh_access_token(sp["client_id"], sp["client_secret"], sp["refresh_token"])
+    _cached_token = token
+    _cached_expiry = now + expires_in - 30
+    return _cached_token
