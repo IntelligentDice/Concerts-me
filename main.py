@@ -23,6 +23,8 @@ def main():
 
     setlist_key = os.getenv("SETLIST_FM_API_KEY", "")
 
+    dry_run = os.getenv("DRY_RUN", "").lower() == "true"
+
     spotify = SpotifyClient(
         client_id=spotify_client_id,
         client_secret=spotify_client_secret,
@@ -34,8 +36,9 @@ def main():
         service_account_json=google_sa_json
     )
 
+    
     # 🔥 Enable full Setlist.fm debug logging
-    pb = PlaylistBuilder(spotify, sheets, setlist_key, debug=True)
+    pb = PlaylistBuilder(spotify, sheets, setlist_key, debug=True, dry_run=dry_run)
 
     pb.run()
 
