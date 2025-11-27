@@ -1,90 +1,138 @@
 import os
 import time
+import base64
 import requests
-import logging
 
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
-SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 
-CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
-
-_cached_token = None
-_cached_expiry = 0
+SESSION = requests.Session()
 
 
-def _ensure_creds():
-    if not CLIENT_ID or not CLIENT_SECRET or not REFRESH_TOKEN:
-        raise RuntimeError("Missing Spotify credentials in environment variables.")
+def _log(msg):
+    print(f"[SPOTIFY] {msg}")
 
 
 def get_access_token():
-    global _cached_token, _cached_expiry
+    """
+    Fetch Spotify access token with retries and full diagnostic logging.
+    """
 
-    now = time.time()
-    if _cached_token and now < _cached_expiry:
-        return _cached_token
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        raise RuntimeError("SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET missing!")
 
-    _ensure_creds()
+    auth_header = base64.b64encode(
+        f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
+    ).decode()
 
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN,
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/x-www-form-urlencoded",
     }
 
-    resp = requests.post(
-        SPOTIFY_TOKEN_URL,
-        data=payload,
-        auth=(CLIENT_ID, CLIENT_SECRET),
-        timeout=15
-    )
+    payload = {"grant_type": "client_credentials"}
+
+    # Retry loop
+    for attempt in range(1, 4):
+        try:
+            _log(f"Requesting token (attempt {attempt}/3)")
+
+            resp = SESSION.post(
+                SPOTIFY_TOKEN_URL,
+                headers=headers,
+                data=payload,
+                timeout=10,
+            )
+
+            # If Spotify responds:
+            if resp.status_code != 200:
+                _log(f"Non-200 response: {resp.status_code}")
+                _log(f"Response text: {resp.text}")
+
+                if resp.status_code in (400, 401):
+                    raise RuntimeError(
+                        f"Spotify rejected credentials: {resp.text}"
+                    )
+
+                # Retry on 429, 500, 502, 503, 504
+                if resp.status_code >= 500 or resp.status_code == 429:
+                    time.sleep(1 * attempt)
+                    continue
+
+                raise RuntimeError(f"Spotify token error: {resp.text}")
+
+            # Try parsing JSON
+            try:
+                data = resp.json()
+            except Exception as ex:
+                _log(f"JSON decode failure: {ex}")
+                _log(f"Raw response: {resp.text}")
+                time.sleep(1 * attempt)
+                continue
+
+            token = data.get("access_token")
+            if not token:
+                _log(f"No access_token in payload: {data}")
+                time.sleep(1 * attempt)
+                continue
+
+            _log("Token acquired successfully.")
+            return token
+
+        except requests.exceptions.RequestException as ex:
+            _log(f"Network error on attempt {attempt}: {repr(ex)}")
+            time.sleep(1 * attempt)
+
+    # If we get here, all retries failed
+    raise RuntimeError("Spotify token refresh failed after 3 attempts.")
+
+
+def _api(method, path, params=None, json=None):
+    """
+    Call Spotify API with token, retry token on 401, and log issues.
+    """
+
+    token = get_access_token()
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    full_url = f"https://api.spotify.com/v1{path}"
+
+    try:
+        resp = SESSION.request(
+            method,
+            full_url,
+            params=params,
+            json=json,
+            headers=headers,
+            timeout=10,
+        )
+
+    except requests.exceptions.RequestException as ex:
+        raise RuntimeError(f"Spotify API network error: {repr(ex)}")
+
+    # Refresh token if expired
+    if resp.status_code == 401:
+        _log("Token expired — refreshing...")
+        token = get_access_token()
+        headers["Authorization"] = f"Bearer {token}"
+
+        resp = SESSION.request(
+            method,
+            full_url,
+            params=params,
+            json=json,
+            headers=headers,
+            timeout=10,
+        )
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Spotify token refresh failed: {resp.text}")
+        raise RuntimeError(
+            f"Spotify API error {resp.status_code}: {resp.text}"
+        )
 
-    data = resp.json()
-    _cached_token = data["access_token"]
-    _cached_expiry = now + data.get("expires_in", 3600) - 10
-
-    return _cached_token
-
-
-def _api(method, path, params=None, json_body=None):
-    token = get_access_token()
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"{SPOTIFY_API_BASE}{path}"
-
-    resp = requests.request(
-        method, url, headers=headers, params=params, json=json_body, timeout=15
-    )
-
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Spotify error {resp.status_code}: {resp.text}")
-
-    return resp.json()
-
-
-def get_current_user_id():
-    return _api("GET", "/me")["id"]
-
-
-def search_track(q, limit=8):
-    params = {"q": q, "type": "track", "limit": limit}
-    data = _api("GET", "/search", params=params)
-    return data.get("tracks", {}).get("items", [])
-
-
-def create_playlist(user_id, playlist_name, public=False, description=""):
-    body = {"name": playlist_name, "public": public, "description": description}
-    return _api("POST", f"/users/{user_id}/playlists", json_body=body)["id"]
-
-
-def add_tracks_to_playlist(playlist_id, uris):
-    if not uris:
-        return
-
-    CHUNK = 100
-    for i in range(0, len(uris), CHUNK):
-        chunk = uris[i:i + CHUNK]
-        _api("POST", f"/playlists/{playlist_id}/tracks", json_body={"uris": chunk})
+    try:
+        return resp.json()
+    except Exception as ex:
+        raise RuntimeError(f"Invalid JSON from Spotify: {resp.text}")
