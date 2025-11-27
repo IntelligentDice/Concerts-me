@@ -6,10 +6,14 @@ from google.oauth2.service_account import Credentials
 
 class GoogleSheets:
     """
-    Google Sheets wrapper that exclusively loads service account credentials
-    from a JSON string stored in the environment variable
-    GOOGLE_SERVICE_ACCOUNT_JSON.
+    Google Sheets wrapper that loads events from a sheet with the format:
+
+        artist | event_name | venue | city | date
+
+    It also handles optional columns safely.
     """
+
+    REQUIRED_COLUMNS = ["artist", "event_name", "venue", "city", "date"]
 
     def __init__(self, sheet_id: str, service_account_json: str):
         if not sheet_id:
@@ -30,37 +34,53 @@ class GoogleSheets:
 
         self.sheet = client.open_by_key(sheet_id).sheet1
 
+    # ------------------------------------------------------------------
+    # Read events from the sheet (FULL DATA)
+    # ------------------------------------------------------------------
     def read_events(self):
         """
-        Expected sheet format:
-         artist | date | songs
-        songs = JSON list OR comma/semicolon separated.
+        Reads rows from the sheet and returns a list of event dictionaries:
+
+        {
+            "artist": "Blind Guardian",
+            "event_name": "...",
+            "venue": "The Underground",
+            "city": "Charlotte",
+            "date": "2025-11-22"
+        }
         """
+
         rows = self.sheet.get_all_records()
         events = []
 
-        for r in rows:
-            artist = r.get("artist")
-            date = r.get("date")
-            songs = r.get("songs", "")
+        for row in rows:
+            # Normalize keys (Google Sheets sometimes changes capitalization)
+            normalized = {k.strip().lower(): v for k, v in row.items()}
 
-            if isinstance(songs, str):
-                try:
-                    parsed = json.loads(songs)
-                    if isinstance(parsed, list):
-                        songs = parsed
-                    else:
-                        songs = [str(parsed)]
-                except Exception:
-                    sep = ";" if ";" in songs else ","
-                    songs = [s.strip() for s in songs.split(sep) if s.strip()]
+            event = {
+                "artist": normalized.get("artist"),
+                "event_name": normalized.get("event_name"),
+                "venue": normalized.get("venue"),
+                "city": normalized.get("city"),
+                "date": normalized.get("date"),
+            }
 
-            events.append({"artist": artist, "date": date, "songs": songs})
+            # Validate required fields
+            if not event["artist"] or not event["date"]:
+                logging.warning(f"Skipping row due to missing required fields: {row}")
+                continue
 
+            events.append(event)
+
+        logging.info(f"[INFO] Loaded {len(events)} events from Google Sheets")
         return events
 
+    # ------------------------------------------------------------------
+    # Write playlist URL
+    # ------------------------------------------------------------------
     def write_playlist_link(self, event_index: int, playlist_url: str):
         header = self.sheet.row_values(1)
+
         try:
             col = header.index("playlist") + 1
         except ValueError:
