@@ -104,7 +104,7 @@ class SetlistFM:
     # ---------------------------------------------------------
     # Extract full event details: opener names + songs, headliner songs
     # ---------------------------------------------------------
-        def _extract_full_event(self, setlist):
+    def _extract_full_event(self, setlist):
         """
         Extracts:
         - headliner name
@@ -183,4 +183,3 @@ class SetlistFM:
             "headliner_songs": headliner_songs,
             "openers": openers
         }
-
