@@ -59,9 +59,9 @@ class SetlistFM:
         venue: Optional[str],
         city: Optional[str],
         date: str,
-        venue_threshold: int = 75,
-        city_threshold: int = 80,
-        headliner_threshold: int = 85,
+        venue_threshold: int = 55,
+        city_threshold: int = 60,
+        headliner_threshold: int = 80,
     ) -> Optional[Dict]:
         """
         Return { headliner, headliner_songs, openers: [{name,songs}] } or None.
