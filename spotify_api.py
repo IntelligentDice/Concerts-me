@@ -1,158 +1,192 @@
 import os
 import time
-import base64
 import requests
+from typing import Optional, Tuple, List
 
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
+SPOTIFY_REFRESH_TOKEN = os.getenv("SPOTIFY_REFRESH_TOKEN")
 
-SESSION = requests.Session()
-
-
-def _log(msg):
-    print(f"[SPOTIFY] {msg}")
+TOKEN_URL = "https://accounts.spotify.com/api/token"
+API_BASE = "https://api.spotify.com/v1"
 
 
-def get_access_token():
+# -----------------------------------------------------------
+#  Token Refresh (with retries + diagnostics)
+# -----------------------------------------------------------
+_cached_token = None
+_cached_expiry = 0
+
+
+def get_access_token(max_retries=3, backoff=1.5) -> str:
     """
-    Fetch Spotify access token with retries and full diagnostic logging.
+    Refresh Spotify API token.
+    GitHub Actions does not allow browser redirect, so we rely
+    on a permanent refresh token only.
     """
 
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        raise RuntimeError("SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET missing!")
+    global _cached_token, _cached_expiry
 
-    auth_header = base64.b64encode(
-        f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
-    ).decode()
+    now = time.time()
+    if _cached_token and now < _cached_expiry - 30:
+        return _cached_token
 
-    headers = {
-        "Authorization": f"Basic {auth_header}",
-        "Content-Type": "application/x-www-form-urlencoded",
+    auth_header = (SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": SPOTIFY_REFRESH_TOKEN,
     }
 
-    payload = {"grant_type": "client_credentials"}
-
-    # Retry loop
-    for attempt in range(1, 4):
+    for attempt in range(1, max_retries + 1):
         try:
-            _log(f"Requesting token (attempt {attempt}/3)")
+            resp = requests.post(TOKEN_URL, data=payload, auth=auth_header, timeout=15)
 
-            resp = SESSION.post(
-                SPOTIFY_TOKEN_URL,
+            if resp.status_code != 200:
+                print(
+                    f"[ERROR] Spotify token refresh failed "
+                    f"(attempt {attempt}/{max_retries}): status={resp.status_code} body={resp.text}"
+                )
+                time.sleep(backoff * attempt)
+                continue
+
+            data = resp.json()
+            access_token = data["access_token"]
+            expires_in = data.get("expires_in", 3600)
+
+            _cached_token = access_token
+            _cached_expiry = now + expires_in
+
+            print(f"[DEBUG] Spotify token refreshed successfully (expires in {expires_in}s)")
+            return access_token
+
+        except Exception as e:
+            print(
+                f"[ERROR] Exception refreshing Spotify token "
+                f"(attempt {attempt}/{max_retries}): {e}"
+            )
+            time.sleep(backoff * attempt)
+
+    raise RuntimeError("Spotify token refresh failed after all retries")
+
+
+# -----------------------------------------------------------
+#  Internal API request wrapper
+# -----------------------------------------------------------
+def _api(method: str, path: str, params=None, json=None, max_retries=3):
+    """
+    Internal helper for calling Spotify Web API with retry logic.
+    """
+    url = f"{API_BASE}{path}"
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            token = get_access_token()
+            headers = {"Authorization": f"Bearer {token}"}
+
+            resp = requests.request(
+                method,
+                url,
                 headers=headers,
-                data=payload,
-                timeout=10,
+                params=params,
+                json=json,
+                timeout=15,
             )
 
-            # If Spotify responds:
+            if resp.status_code == 429:
+                wait = int(resp.headers.get("Retry-After", "3"))
+                print(f"[WARN] Spotify rate limit hit, sleeping for {wait}s")
+                time.sleep(wait)
+                continue
+
+            if resp.status_code in (500, 502, 503, 504):
+                print(
+                    f"[WARN] Spotify server error {resp.status_code}, retrying "
+                    f"({attempt}/{max_retries})"
+                )
+                time.sleep(1.5 * attempt)
+                continue
+
             if resp.status_code != 200:
-                _log(f"Non-200 response: {resp.status_code}")
-                _log(f"Response text: {resp.text}")
+                print(
+                    f"[ERROR] Spotify API error on {method} {path}: "
+                    f"status={resp.status_code} body={resp.text}"
+                )
+                return None
 
-                if resp.status_code in (400, 401):
-                    raise RuntimeError(
-                        f"Spotify rejected credentials: {resp.text}"
-                    )
+            return resp.json()
 
-                # Retry on 429, 500, 502, 503, 504
-                if resp.status_code >= 500 or resp.status_code == 429:
-                    time.sleep(1 * attempt)
-                    continue
+        except Exception as e:
+            print(
+                f"[ERROR] Exception in Spotify API call ({method} {path}) "
+                f"(attempt {attempt}/{max_retries}): {e}"
+            )
+            time.sleep(1.5 * attempt)
 
-                raise RuntimeError(f"Spotify token error: {resp.text}")
-
-            # Try parsing JSON
-            try:
-                data = resp.json()
-            except Exception as ex:
-                _log(f"JSON decode failure: {ex}")
-                _log(f"Raw response: {resp.text}")
-                time.sleep(1 * attempt)
-                continue
-
-            token = data.get("access_token")
-            if not token:
-                _log(f"No access_token in payload: {data}")
-                time.sleep(1 * attempt)
-                continue
-
-            _log("Token acquired successfully.")
-            return token
-
-        except requests.exceptions.RequestException as ex:
-            _log(f"Network error on attempt {attempt}: {repr(ex)}")
-            time.sleep(1 * attempt)
-
-    # If we get here, all retries failed
-    raise RuntimeError("Spotify token refresh failed after 3 attempts.")
+    print(f"[ERROR] Spotify API failed after all retries for {method} {path}")
+    return None
 
 
-def _api(method, path, params=None, json=None):
-    """
-    Call Spotify API with token, retry token on 401, and log issues.
-    """
-
-    token = get_access_token()
-
-    headers = {"Authorization": f"Bearer {token}"}
-
-    full_url = f"https://api.spotify.com/v1{path}"
-
-    try:
-        resp = SESSION.request(
-            method,
-            full_url,
-            params=params,
-            json=json,
-            headers=headers,
-            timeout=10,
-        )
-
-    except requests.exceptions.RequestException as ex:
-        raise RuntimeError(f"Spotify API network error: {repr(ex)}")
-
-    # Refresh token if expired
-    if resp.status_code == 401:
-        _log("Token expired — refreshing...")
-        token = get_access_token()
-        headers["Authorization"] = f"Bearer {token}"
-
-        resp = SESSION.request(
-            method,
-            full_url,
-            params=params,
-            json=json,
-            headers=headers,
-            timeout=10,
-        )
-
-    if resp.status_code != 200:
-        raise RuntimeError(
-            f"Spotify API error {resp.status_code}: {resp.text}"
-        )
-
-    try:
-        return resp.json()
-    except Exception as ex:
-        raise RuntimeError(f"Invalid JSON from Spotify: {resp.text}")
-
-def search_track(query, limit=10):
-    """
-    Search Spotify tracks using the /search endpoint.
-    Wraps _api() so token refresh + logging still work.
-    """
-    params = {
-        "q": query,
-        "type": "track",
-        "limit": limit,
-    }
-
-    try:
-        data = _api("GET", "/search", params=params)
-    except Exception as ex:
-        _log(f"Track search failed for query='{query}': {ex}")
-        raise
-
-    # Spotify returns { "tracks": { "items": [...] } }
+# -----------------------------------------------------------
+#  SEARCH: Track
+# -----------------------------------------------------------
+def search_track(query: str, limit: int = 10) -> List[dict]:
+    params = {"q": query, "type": "track", "limit": limit}
+    data = _api("GET", "/search", params=params)
+    if not data:
+        return []
     return data.get("tracks", {}).get("items", [])
+
+
+# -----------------------------------------------------------
+#  ARTIST top tracks
+# -----------------------------------------------------------
+def get_artist_top_tracks(artist_id: str) -> List[dict]:
+    data = _api("GET", f"/artists/{artist_id}/top-tracks", params={"market": "US"})
+    if not data:
+        return []
+    return data.get("tracks", [])
+
+
+# -----------------------------------------------------------
+#  ALBUM → all tracks
+# -----------------------------------------------------------
+def get_album_tracks(album_id: str) -> List[dict]:
+    data = _api("GET", f"/albums/{album_id}/tracks")
+    if not data:
+        return []
+    return data.get("items", [])
+
+
+# -----------------------------------------------------------
+#  Helper for PlaylistBuilder
+# -----------------------------------------------------------
+def best_match_track(track_name: str, artist_hint: Optional[str] = None) -> Optional[Tuple[str, float]]:
+    """
+    Returns (track_uri, confidence_score).
+    PlaylistBuilder will pick the best match.
+    """
+    from rapidfuzz import fuzz
+
+    query = f"{track_name} {artist_hint}" if artist_hint else track_name
+    results = search_track(query)
+
+    best_uri = None
+    best_score = 0
+
+    for item in results:
+        name = item["name"]
+        artists = ", ".join(a["name"] for a in item["artists"])
+
+        score = (
+            fuzz.token_set_ratio(track_name, name)
+            + (fuzz.partial_ratio(artist_hint, artists) if artist_hint else 0)
+        )
+
+        if score > best_score:
+            best_score = score
+            best_uri = item["uri"]
+
+    if best_uri:
+        print(f"[DEBUG] Best match for '{track_name}' → {best_score} ({best_uri})")
+
+    return (best_uri, best_score) if best_uri else None
