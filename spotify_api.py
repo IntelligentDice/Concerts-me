@@ -127,6 +127,34 @@ def _call_api(method: str, path: str, params=None, json_body=None, retries: int 
             return None
     return None
 
+def find_playlist_by_name(name):
+    """
+    Returns playlist ID if a user's playlist with that exact name exists.
+    Otherwise returns None.
+    """
+    token = ensure_token()
+    if not token:
+        return None
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Spotify paging: we search up to 50 playlists (can be increased)
+    url = "https://api.spotify.com/v1/me/playlists?limit=50"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+    except Exception:
+        return None
+
+    if resp.status_code != 200:
+        return None
+
+    items = resp.json().get("items", [])
+    for pl in items:
+        if pl.get("name", "").strip().lower() == name.strip().lower():
+            return pl.get("id")
+
+    return None
 
 # ----- helper functions expected by spotify_client/playlist_builder -----
 def search_track(query: str, limit: int = 10) -> List[dict]:
