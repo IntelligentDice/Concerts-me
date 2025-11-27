@@ -27,15 +27,14 @@ class SpotifyClient:
     def add_tracks(self, playlist_id, uris):
         return spotify_api.add_tracks_to_playlist(playlist_id, uris)
 
-    # ⭐ NEW METHOD (PlaylistBuilder expects this exact name)
+    # ⭐ PlaylistBuilder calls this name, so we expose it explicitly
     def add_tracks_to_playlist(self, playlist_id, uris):
         return spotify_api.add_tracks_to_playlist(playlist_id, uris)
 
+    # ⭐ New method for duplicate playlist prevention
     def find_playlist_by_name(self, name: str):
-    """
-    Convenience passthrough to spotify_api.find_playlist_by_name(name)
-    Returns playlist_id or None.
-    """
-    return spotify_api.find_playlist_by_name(name)
-
-
+        """
+        Convenience passthrough to spotify_api.find_playlist_by_name(name).
+        Returns playlist_id or None.
+        """
+        return spotify_api.find_playlist_by_name(name)
