@@ -53,11 +53,13 @@ def _best_spotify_match_for_song(song_title: str, artist_hint: str):
 
 
 class PlaylistBuilder:
-    def __init__(self, spotify_client, sheets_client, setlist_api_key: str, debug: bool = False):
+    def __init__(self, spotify_client, sheets_client, setlist_api_key: str, debug: bool = False, dry_run: bool = False):
         self.spotify = spotify_client
         self.sheets = sheets_client
         self.setlist = SetlistFM(setlist_api_key, verbose=debug)
         self.debug = debug
+        self.dry_run = dry_run
+
 
     def _log(self, *a):
         if self.debug:
