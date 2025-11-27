@@ -106,25 +106,13 @@ class SetlistFM:
             if not ev or not ec:
                 continue
 
+            # Compute fuzzy scores
             ven_score = fuzz.token_set_ratio(norm_target_venue, _norm_text(ev)) if norm_target_venue else 0
             city_score = fuzz.token_set_ratio(norm_target_city, _norm_text(ec)) if norm_target_city else 0
 
-            if norm_target_venue and norm_target_city:
-                if ven_score >= venue_threshold and city_score >= city_threshold:
-                    candidates.append(e)
-                else:
-                    self._log(f"[TRACE] Rejecting {e.get('artist',{}).get('name')} @ {ev}, {ec} (venue_score={ven_score} city_score={city_score})")
-            elif norm_target_venue:
-                if ven_score >= venue_threshold:
-                    candidates.append(e)
-            elif norm_target_city:
-                if city_score >= city_threshold:
-                    candidates.append(e)
-            else:
-                # no venue/city provided - cannot strictly match
-                pass
-
-        self._log(f"[DEBUG] candidates after strict venue+city filter: {len(candidates)}")
+            # Emit detailed scoring per candidate
+            self._log(f"[DEBUG] Candidate event: {e.get('artist',{}).get('name')} @ {ev}, {ec}")
+            self._log(f"[DEBUG]   Scores => venu_
 
         # If we have zero candidates, abort (Option A demands strictness)
         if not candidates:
