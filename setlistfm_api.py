@@ -57,81 +57,97 @@ class SetlistFM:
         return songs
 
     def find_event_setlist(self, artist: str, venue: Optional[str], city: Optional[str], date: str):
-    """
-    Two-stage search:
-    1. Search for the headliner by artist + date
-    2. Use the resolved venue + city + event date to pull all bands (openers + headliner)
-    """
-    self._log(f"[INFO] Searching setlists for artist='{artist}', date='{date}'")
+        """
+        Two-stage search:
+        1. Search for the headliner by artist + date
+        2. Use the resolved venue + city + event date to pull all bands (openers + headliner)
+        """
+        self._log(f"[INFO] Searching setlists for artist='{artist}', date='{date}'")
 
-    date_ddmm = self._to_setlistfm_date(date)
+        date_ddmm = self._to_setlistfm_date(date)
 
-    # --- 1. Find the headliner event via artist search ---
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/search/setlists",
-            headers=self.headers,
-            params={"artistName": artist, "date": date_ddmm},
-            timeout=15,
+        # --- 1. Find the headliner event via artist search ---
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/search/setlists",
+                headers=self.headers,
+                params={"artistName": artist, "date": date_ddmm},
+                timeout=15,
+            )
+        except Exception as e:
+            self._log("[WARN] Setlist.fm network error:", e)
+            return None
+
+        if resp.status_code != 200:
+            self._log("[WARN] Setlist.fm returned", resp.status_code)
+            return None
+
+        artist_sets = resp.json().get("setlist", []) or []
+        self._log(f"[DEBUG] total setlists returned for artist search: {len(artist_sets)}")
+
+        # Must match the same date
+        headliner_entry = None
+        for e in artist_sets:
+            if e.get("eventDate") == date_ddmm:
+                headliner_entry = e
+                break
+
+        if not headliner_entry:
+            self._log("[WARN] No headliner setlist found for exact date")
+            return None
+
+        ev = headliner_entry.get("venue", {})
+        resolved_venue = ev.get("name", "") or ""
+        resolved_city = (ev.get("city", {}) or {}).get("name", "") or ""
+
+        self._log(
+            f"[INFO] Matched eventId={headliner_entry.get('id')}, "
+            f"venue='{resolved_venue}', city='{resolved_city}'"
         )
-    except Exception as e:
-        self._log("[WARN] Setlist.fm network error:", e)
-        return None
 
-    if resp.status_code != 200:
-        self._log("[WARN] Setlist.fm returned", resp.status_code)
-        return None
+        headliner_songs = self._extract_songs(headliner_entry)
+        self._log(f"[DEBUG] headliner_songs={len(headliner_songs)}")
 
-    artist_sets = resp.json().get("setlist", []) or []
-    self._log(f"[DEBUG] total setlists returned for artist search: {len(artist_sets)}")
+        # --- 2. Fetch all bands that played the same venue/city/date ---
+        try:
+            resp2 = requests.get(
+                f"{BASE_URL}/search/setlists",
+                headers=self.headers,
+                params={
+                    "venueName": resolved_venue,
+                    "cityName": resolved_city,
+                    "date": date_ddmm
+                },
+                timeout=15,
+            )
+        except Exception as e:
+            self._log("[WARN] Setlist.fm network error (openers search):", e)
+            return {
+                "headliner": artist,
+                "headliner_songs": headliner_songs,
+                "openers": []
+            }
 
-    # Must match the same date
-    headliner_entry = None
-    for e in artist_sets:
-        if e.get("eventDate") == date_ddmm:
-            headliner_entry = e
-            break
+        all_entries = resp2.json().get("setlist", []) or []
+        self._log(f"[DEBUG] opener+headliner search returned {len(all_entries)} entries")
 
-    if not headliner_entry:
-        self._log("[WARN] No headliner setlist found for exact date")
-        return None
+        openers = []
+        for e in all_entries:
+            name = (e.get("artist", {}) or {}).get("name", "")
+            if not name:
+                continue
 
-    ev = headliner_entry.get("venue", {})
-    resolved_venue = ev.get("name", "")
-    resolved_city = ev.get("city", {}).get("name", "")
-    self._log(f"[INFO] Matched eventId={headliner_entry.get('id')}, venue='{resolved_venue}', city='{resolved_city}'")
+            # Skip headliner
+            if name.lower() == artist.lower():
+                continue
 
-    headliner_songs = self._extract_songs(headliner_entry)
-    self._log(f"[DEBUG] headliner_songs={len(headliner_songs)}")
+            songs = self._extract_songs(e)
+            openers.append({"name": name, "songs": songs})
 
-    # --- 2. Fetch all bands that played the same venue/city/date ---
-    try:
-        resp2 = requests.get(
-            f"{BASE_URL}/search/setlists",
-            headers=self.headers,
-            params={"venueName": resolved_venue, "cityName": resolved_city, "date": date_ddmm},
-            timeout=15,
-        )
-    except Exception as e:
-        self._log("[WARN] Setlist.fm network error (openers search):", e)
-        return {"headliner": artist, "headliner_songs": headliner_songs, "openers": []}
+        self._log(f"[DEBUG] openers_found={len(openers)}")
 
-    all_entries = resp2.json().get("setlist", []) or []
-    self._log(f"[DEBUG] opener+headliner search returned {len(all_entries)} entries")
-
-    openers = []
-    for e in all_entries:
-        name = e.get("artist", {}).get("name")
-        if not name or name.lower() == artist.lower():
-            continue  # skip headliner
-
-        songs = self._extract_songs(e)
-        openers.append({"name": name, "songs": songs})
-
-    self._log(f"[DEBUG] openers_found={len(openers)}")
-
-    return {
-        "headliner": artist,
-        "headliner_songs": headliner_songs,
-        "openers": openers,
-    }
+        return {
+            "headliner": artist,
+            "headliner_songs": headliner_songs,
+            "openers": openers,
+        }
