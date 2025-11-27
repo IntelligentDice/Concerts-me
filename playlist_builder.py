@@ -64,7 +64,9 @@ class PlaylistBuilder:
         else:
             log(*a)
 
-    def _build_playlist_for_event(self, user_id: str, playlist_name: str, track_uris: List[str]):
+    def _build_playlist_for_event(self, user_id: str, playlist_name: str,
+                              track_uris: List[str], description: str = "Auto-generated concert playlist"):
+
         if self.dry_run:
             log(f"[DRY-RUN] Would create playlist '{playlist_name}' with {len(track_uris)} tracks")
             for u in track_uris:
@@ -77,7 +79,7 @@ class PlaylistBuilder:
             user_id,
             playlist_name,
             public=False,
-            description="Auto-generated concert playlist"
+            description=description
         )
 
         if not pid:
