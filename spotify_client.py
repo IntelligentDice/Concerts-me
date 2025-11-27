@@ -31,5 +31,11 @@ class SpotifyClient:
     def add_tracks_to_playlist(self, playlist_id, uris):
         return spotify_api.add_tracks_to_playlist(playlist_id, uris)
 
-    def find_playlist_by_name(self, name):
+    def find_playlist_by_name(self, name: str):
+    """
+    Convenience passthrough to spotify_api.find_playlist_by_name(name)
+    Returns playlist_id or None.
+    """
     return spotify_api.find_playlist_by_name(name)
+
+
