@@ -20,7 +20,6 @@ def _spotify_top_tracks_fallback(artist_name: str, limit: int = 5):
 def _best_spotify_match_for_song(song_title: str, artist_hint: str):
     # use search_track and fuzzy matching
     try:
-        # prefer a combined query
         q = f"{song_title} {artist_hint}"
         results = search_track(q, limit=12)
     except Exception:
@@ -37,7 +36,6 @@ def _best_spotify_match_for_song(song_title: str, artist_hint: str):
             best_score = score
             best_uri = uri
 
-    # fallback broader search if nothing found
     if not best_uri:
         results = search_track(song_title, limit=8)
         for item in results:
@@ -59,7 +57,6 @@ class PlaylistBuilder:
         self.setlist = SetlistFM(setlist_api_key, verbose=debug)
         self.debug = debug
         self.dry_run = dry_run
-
 
     def _log(self, *a):
         if self.debug:
@@ -105,7 +102,9 @@ class PlaylistBuilder:
                 continue
 
             self._log(f"[INFO] Looking up setlist for {artist} on {date} @ {venue}, {city}")
-            event_data = self.setlist.find_event_setlist(artist=artist, venue=venue, city=city, date=date)
+            event_data = self.setlist.find_event_setlist(
+                artist=artist, venue=venue, city=city, date=date
+            )
             if not event_data:
                 warn(f"[WARN] No matching setlist found for {artist} on {date} @ {venue}, {city}")
                 continue
@@ -114,7 +113,33 @@ class PlaylistBuilder:
             headliner_songs = event_data["headliner_songs"] or []
             openers = event_data.get("openers", []) or []
 
-            # Build ordered pairs: openers first, then headliner
+            # --- Opener sorting logic ---
+            def _parse_time_or_none(t):
+                if not t:
+                    return None
+                try:
+                    return tuple(map(int, t.split(":")))  # HH:MM or HH:MM:ss
+                except:
+                    return None
+
+            def _sort_key_for_opener(op):
+                # 1) startTime — earliest first
+                st = _parse_time_or_none(op.get("startTime"))
+
+                # 2) lastUpdated — oldest first
+                lu = op.get("lastUpdated")
+
+                # 3) name (stable fallback)
+                nm = (op.get("name") or "").lower()
+
+                st_key = st if st else (99, 99, 99)
+                lu_key = lu if lu else "9999-99-99T99:99:99Z"
+
+                return (st_key, lu_key, nm)
+
+            openers = sorted(openers, key=_sort_key_for_opener)
+
+            # Build ordered pairs
             pairs = []
             for op in openers:
                 name = op.get("name")
@@ -124,11 +149,10 @@ class PlaylistBuilder:
                     for s in songs:
                         pairs.append((s, name))
                 else:
-                    # fallback to spotify top tracks
                     self._log(f"[INFO] Opener {name} has no songs in setlist; using spotify fallback")
                     uris = _spotify_top_tracks_fallback(name, limit=5)
                     for u in uris:
-                        pairs.append((u, None))  # URI pass-through
+                        pairs.append((u, None))
 
             # Add headliner songs
             if headliner_songs:
@@ -161,7 +185,7 @@ class PlaylistBuilder:
                 warn(f"No tracks resolved for {artist} on {date}")
                 continue
 
-            # create and populate playlist
+            # Create playlist
             try:
                 user_id = self.spotify.get_current_user_id() or "me"
             except Exception:
