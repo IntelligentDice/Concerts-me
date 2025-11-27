@@ -23,7 +23,9 @@ def main():
 
     setlist_key = os.getenv("SETLIST_FM_API_KEY", "")
 
-    dry_run = os.getenv("DRY_RUN", "").lower() == "true"
+    raw_dry = os.getenv("DRY_RUN", "")
+    dry_run = raw_dry.strip().lower() in ("1", "true", "yes", "y")
+    print(f"[DEBUG] DRY_RUN mode = {dry_run} (raw='{raw_dry}')")
 
     spotify = SpotifyClient(
         client_id=spotify_client_id,
