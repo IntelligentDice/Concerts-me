@@ -1,8 +1,7 @@
 # playlist_builder.py
 from setlistfm_api import SetlistFM
-from fuzzywuzzy import fuzz
 from utils.logging_utils import log, warn
-from spotify_api import search_track, get_artist_top_tracks, get_album_tracks, best_match_track  # best_match_track may not exist - we will fall back to local logic
+from spotify_api import search_track, get_artist_top_tracks, get_album_tracks
 from typing import List
 
 
