@@ -29,4 +29,5 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           # Add if needed; safe defaults exist in code
           SPOTIFY_REDIRECT_URI: "http://localhost:8080/callback"
+          DRY_RUN: "true"
         run: python main.py
