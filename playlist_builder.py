@@ -169,4 +169,8 @@ class PlaylistBuilder:
 
             playlist_name = f"{artist} - {date}"
             pid = self._build_playlist_for_event(user_id, playlist_name, track_uris)
-            log(f"Playlist created: {playlist_name} (id={pid})")
+
+            if self.dry_run:
+                log(f"[DRY-RUN] Playlist NOT created: {playlist_name}")
+            else:
+                log(f"Playlist created: {playlist_name} (id={pid})")
