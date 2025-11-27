@@ -104,8 +104,17 @@ class SetlistFM:
     # ---------------------------------------------------------
     # Extract full event details: opener names + songs, headliner songs
     # ---------------------------------------------------------
-    def _extract_full_event(self, setlist):
+        def _extract_full_event(self, setlist):
+        """
+        Extracts:
+        - headliner name
+        - headliner song list
+        - opener names + songs (if present)
+        - Adds full debug output so user can see what was detected
+        """
+
         artist_name = setlist.get("artist", {}).get("name", "")
+        print(f"[DEBUG] Headliner detected: {artist_name}")
 
         sets = setlist.get("sets", {}).get("set", [])
         if not isinstance(sets, list):
@@ -117,40 +126,61 @@ class SetlistFM:
 
         for block in sets:
             block_name = (block.get("name") or "").strip()
-
-            # Song list in this block
-            block_songs_raw = block.get("song", []) or []
-            if not isinstance(block_songs_raw, list):
-                block_songs_raw = [block_songs_raw]
             block_songs = []
-            for s in block_songs_raw:
+
+            raw = block.get("song", []) or []
+            if not isinstance(raw, list):
+                raw = [raw]
+
+            for s in raw:
                 if isinstance(s, dict) and s.get("name"):
                     block_songs.append(s["name"])
                 elif isinstance(s, str):
                     block_songs.append(s)
 
-            # Determine if block is opener
-            if block_name and block_name.lower() not in ("main", "main set", "encore"):
-                # opener block
-                if block_name.lower() not in opener_seen:
-                    openers.append({"name": block_name, "songs": block_songs})
-                    opener_seen.add(block_name.lower())
-                continue
+            # --- OPENERS ---
+            # Rule:
+            #   If block_name appears to be an ACTUAL BAND NAME
+            #   (and not "Main Set", "Encore", "Intro")
+            #
+            # Heuristic improvement: If block_name == headliner, treat as headliner.
+            #
+            if block_name:
+                low = block_name.lower()
 
-            # Otherwise headliner block
+                if low not in ("main", "main set", "encore", "intro") \
+                   and fuzz.token_set_ratio(block_name, artist_name) < 70:
+                    print(f"[DEBUG] Opener block detected: {block_name}")
+                    print(f"[DEBUG]   Songs: {block_songs}")
+
+                    if low not in opener_seen:
+                        openers.append({
+                            "name": block_name,
+                            "songs": block_songs
+                        })
+                        opener_seen.add(low)
+                    continue
+
+            # --- HEADLINER ---
+            print(f"[DEBUG] Headliner block found (name='{block_name}')")
+            print(f"[DEBUG]   Songs: {block_songs}")
             headliner_songs.extend(block_songs)
 
-        # Also parse support list
+        # Additional opener names from support[]
         supports = setlist.get("artist", {}).get("support", []) or []
         for sup in supports:
             sup_name = sup.get("name", "").strip()
             if sup_name and sup_name.lower() not in opener_seen:
-                # no opener-specific songs known; fallback to empty list
+                print(f"[DEBUG] Support opener detected: {sup_name}")
                 openers.append({"name": sup_name, "songs": []})
                 opener_seen.add(sup_name.lower())
+
+        print(f"[DEBUG] FINAL OPENERS: {openers}")
+        print(f"[DEBUG] FINAL HEADLINER SONGS COUNT: {len(headliner_songs)}")
 
         return {
             "headliner": artist_name,
             "headliner_songs": headliner_songs,
             "openers": openers
         }
+
