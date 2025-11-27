@@ -217,6 +217,16 @@ class PlaylistBuilder:
                     f"Live setlist from {headliner} — recorded at "
                     f"{venue_str}, {city_str} on {date_str}."
                 )
+                
+            # Prevent duplicate playlists (Feature D)
+            existing = self.spotify.find_playlist_by_name(playlist_name)
+
+            if existing:
+                if self.dry_run:
+                    log(f"[DRY-RUN] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
+                else:
+                    log(f"[INFO] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
+                continue
 
             playlist_name = f"{artist} - {date}"
             pid = self._build_playlist_for_event(
