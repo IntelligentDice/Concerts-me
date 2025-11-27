@@ -1,72 +1,59 @@
 # playlist_builder.py
-from spotify_api import search_track
-from spotify_api import get_artist_top_tracks  # may return [] if artist_id unknown; we fallback below
-from spotify_api import get_album_tracks
-from spotify_api import best_match_track
 from setlistfm_api import SetlistFM
 from fuzzywuzzy import fuzz
 from utils.logging_utils import log, warn
+from spotify_api import search_track, get_artist_top_tracks, get_album_tracks, best_match_track  # best_match_track may not exist - we will fall back to local logic
+from typing import List
 
 
 def _spotify_top_tracks_fallback(artist_name: str, limit: int = 5):
-    """
-    Fallback: search tracks for the artist name and return top N URIs (by Spotify popularity).
-    """
-    # Search broadly for tracks matching the artist (many tracks will include artist in artist list)
+    # search for popular tracks for the artist and return URIs
     q = f"artist:{artist_name}"
     results = search_track(q, limit=40)
     if not results:
-        # try a general search
         results = search_track(artist_name, limit=40)
-    # sort by popularity if present
     items = sorted(results, key=lambda it: it.get("popularity", 0), reverse=True)
-    uris = []
-    for it in items[:limit]:
-        uri = it.get("uri")
-        if uri:
-            uris.append(uri)
-    return uris
+    uris = [it.get("uri") for it in items if it.get("uri")]
+    return uris[:limit]
 
 
 def _best_spotify_match_for_song(song_title: str, artist_hint: str):
-    """
-    Use best_match_track from spotify_api if present, else fallback to local search logic.
-    Returns (uri, score)
-    """
+    # use search_track and fuzzy matching
     try:
-        res = best_match_track(song_title, artist_hint)
-        if res:
-            uri, score = res
-            return uri, score
+        # prefer a combined query
+        q = f"{song_title} {artist_hint}"
+        results = search_track(q, limit=12)
     except Exception:
-        pass
+        results = []
 
-    # fallback simple approach
-    queries = [f"{song_title} {artist_hint}", f"{song_title}"]
     best_uri = None
     best_score = -1
-    for q in queries:
-        results = search_track(q, limit=8)
+    for item in results:
+        uri = item.get("uri")
+        name = item.get("name", "")
+        artists = ", ".join(a["name"] for a in item.get("artists", []))
+        score = (fuzz.token_set_ratio(song_title, name) + fuzz.token_set_ratio(artist_hint or "", artists)) / 2
+        if score > best_score:
+            best_score = score
+            best_uri = uri
+
+    # fallback broader search if nothing found
+    if not best_uri:
+        results = search_track(song_title, limit=8)
         for item in results:
             uri = item.get("uri")
             name = item.get("name", "")
-            artists = item.get("artists", [])
-            artist_name = artists[0]["name"] if artists else ""
-            # use fuzzy token set ratio
-            score = (fuzz.token_set_ratio(song_title, name) + fuzz.token_set_ratio(artist_hint, artist_name)) / 2
+            artists = ", ".join(a["name"] for a in item.get("artists", []))
+            score = (fuzz.token_set_ratio(song_title, name) + fuzz.token_set_ratio(artist_hint or "", artists)) / 2
             if score > best_score:
                 best_score = score
                 best_uri = uri
+
     return best_uri, best_score
 
 
 class PlaylistBuilder:
-    """
-    PlaylistBuilder using Setlist.fm Approach A (date -> filter by venue/city -> collect artists).
-    Creates one Spotify playlist per event (openers first, headliner last).
-    """
-
-    def __init__(self, spotify_client, sheets_client, setlist_api_key, debug: bool = False):
+    def __init__(self, spotify_client, sheets_client, setlist_api_key: str, debug: bool = False):
         self.spotify = spotify_client
         self.sheets = sheets_client
         self.setlist = SetlistFM(setlist_api_key, verbose=debug)
@@ -78,102 +65,91 @@ class PlaylistBuilder:
         else:
             log(*a)
 
-    def _build_playlist_for_event(self, user_id, playlist_name, track_uris):
+    def _build_playlist_for_event(self, user_id: str, playlist_name: str, track_uris: List[str]):
         log(f"Creating playlist {playlist_name} with {len(track_uris)} tracks")
         pid = self.spotify.create_playlist(user_id, playlist_name, public=False, description="Auto-generated concert playlist")
-        if track_uris:
-            # spotify client method add_tracks_to_playlist may accept chunks; assume it exists
-            self.spotify.add_tracks_to_playlist(pid, track_uris)
+        if not pid:
+            raise RuntimeError("Failed to create playlist")
+        ok = self.spotify.add_tracks_to_playlist(pid, track_uris)
+        if not ok:
+            warn("Failed to add tracks to playlist")
         return pid
 
     def run(self):
         events = self.sheets.read_events()
-
-        for idx, event in enumerate(events):
-            artist = event.get("artist")
-            date = event.get("date")
-            venue = event.get("venue", None)
-            city = event.get("city", None)
+        for idx, ev in enumerate(events):
+            artist = ev.get("artist")
+            date = ev.get("date")
+            venue = ev.get("venue")
+            city = ev.get("city")
 
             if not artist or not date:
                 warn(f"Skipping row {idx}: missing artist/date")
                 continue
 
             self._log(f"[INFO] Looking up setlist for {artist} on {date} @ {venue}, {city}")
-
             event_data = self.setlist.find_event_setlist(artist=artist, venue=venue, city=city, date=date)
             if not event_data:
-                warn(f"No matching setlist found for {artist} on {date}")
+                warn(f"[WARN] No matching setlist found for {artist} on {date} @ {venue}, {city}")
                 continue
 
             headliner = event_data["headliner"]
-            headliner_songs = event_data["headliner_songs"]
-            openers = event_data["openers"]
+            headliner_songs = event_data["headliner_songs"] or []
+            openers = event_data.get("openers", []) or []
 
-            # Build ordered track list: openers first, then headliner
-            song_pairs = []  # (song_title, artist_hint)
-            if openers:
-                for op in openers:
-                    op_name = op.get("name")
-                    op_songs = op.get("songs", []) or []
-                    if op_songs:
-                        self._log(f"[INFO] Adding opener {op_name} ({len(op_songs)} songs from setlist)")
-                        for s in op_songs:
-                            song_pairs.append((s, op_name))
-                    else:
-                        self._log(f"[INFO] Opener {op_name} has no setlist songs — will use Spotify fallback")
-                        # fallback: top spotify tracks for that opener
-                        fallback_uris = _spotify_top_tracks_fallback(op_name, limit=5)
-                        if fallback_uris:
-                            # convert URIs to pseudo-song pairs so they are later added directly
-                            # we treat them specially by putting (uri, None) where uri starts with "spotify:"
-                            for u in fallback_uris:
-                                song_pairs.append((u, None))  # URI direct
-                        else:
-                            self._log(f"[WARN] No fallback tracks found for opener {op_name}")
-            else:
-                self._log("[INFO] No openers detected for this event")
+            # Build ordered pairs: openers first, then headliner
+            pairs = []
+            for op in openers:
+                name = op.get("name")
+                songs = op.get("songs", []) or []
+                if songs:
+                    self._log(f"[INFO] Opener {name} has {len(songs)} songs")
+                    for s in songs:
+                        pairs.append((s, name))
+                else:
+                    # fallback to spotify top tracks
+                    self._log(f"[INFO] Opener {name} has no songs in setlist; using spotify fallback")
+                    uris = _spotify_top_tracks_fallback(name, limit=5)
+                    for u in uris:
+                        pairs.append((u, None))  # URI pass-through
 
-            # add headliner songs
+            # Add headliner songs
             if headliner_songs:
-                self._log(f"[INFO] Adding headliner {headliner} ({len(headliner_songs)} songs)")
+                self._log(f"[INFO] Headliner {headliner} songs count: {len(headliner_songs)}")
                 for s in headliner_songs:
-                    song_pairs.append((s, headliner))
+                    pairs.append((s, headliner))
             else:
-                self._log(f"[WARN] No headliner songs found for {headliner} — skipping event")
+                warn(f"[WARN] No headliner songs found for {headliner} — skipping")
                 continue
 
-            # Resolve song_pairs into spotify URIs
+            # Resolve to URIs
             track_uris = []
             seen = set()
-            for title_or_uri, artist_hint in song_pairs:
-                # if artist_hint is None and title_or_uri looks like a spotify URI, add directly
+            for title_or_uri, artist_hint in pairs:
                 if artist_hint is None and isinstance(title_or_uri, str) and title_or_uri.startswith("spotify:"):
                     if title_or_uri not in seen:
                         track_uris.append(title_or_uri)
                         seen.add(title_or_uri)
                     continue
 
-                # otherwise it's a title -> search
                 uri, score = _best_spotify_match_for_song(title_or_uri, artist_hint or headliner)
-                if uri:
-                    if uri not in seen:
-                        track_uris.append(uri)
-                        seen.add(uri)
-                        self._log(f"[DEBUG] Matched '{title_or_uri}' -> {uri} (score={score})")
+                if uri and uri not in seen:
+                    track_uris.append(uri)
+                    seen.add(uri)
+                    self._log(f"[DEBUG] Matched '{title_or_uri}' -> {uri} (score={score})")
                 else:
-                    self._log(f"[WARN] Could not match '{title_or_uri}' ({artist_hint}) on Spotify")
+                    self._log(f"[WARN] Could not match '{title_or_uri}' ({artist_hint})")
 
             if not track_uris:
                 warn(f"No tracks resolved for {artist} on {date}")
                 continue
 
-            # create playlist
-            user_id = None
+            # create and populate playlist
             try:
-                user_id = self.spotify.get_current_user_id()
+                user_id = self.spotify.get_current_user_id() or "me"
             except Exception:
                 user_id = "me"
+
             playlist_name = f"{artist} - {date}"
             pid = self._build_playlist_for_event(user_id, playlist_name, track_uris)
             log(f"Playlist created: {playlist_name} (id={pid})")
