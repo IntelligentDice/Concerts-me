@@ -30,3 +30,6 @@ class SpotifyClient:
     # ⭐ NEW METHOD (PlaylistBuilder expects this exact name)
     def add_tracks_to_playlist(self, playlist_id, uris):
         return spotify_api.add_tracks_to_playlist(playlist_id, uris)
+
+    def find_playlist_by_name(self, name):
+    return spotify_api.find_playlist_by_name(name)
