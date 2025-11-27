@@ -70,7 +70,13 @@ class PlaylistBuilder:
 
             log(f"Looking up setlist for {artist} on {date}...")
 
-            event_data = self.setlist.find_event_setlist(artist, date)
+            event_data = self.setlist.find_event_setlist(
+                artist=artist,
+                venue=event.get("venue"),
+                city=event.get("city"),
+                date=date
+            )
+
             if not event_data:
                 warn(f"No matching setlist found for {artist} on {date}")
                 continue
