@@ -193,11 +193,30 @@ class PlaylistBuilder:
             except Exception:
                 user_id = "me"
 
-            # Build detailed playlist description (Option 1)
-            description = (
-                f"Live setlist for {artist} at {venue} in {city} on {date}. "
-                f"Includes opener bands and full show order."
-            )
+            # ---- Build smart playlist description (Feature C) ----
+            date_str = date
+            venue_str = venue or "Unknown venue"
+            city_str = city or "Unknown city"
+
+            if openers:
+                if len(openers) == 1:
+                    opener_part = f"with opener {openers[0]['name']}"
+                else:
+                    opener_names = ", ".join(op['name'] for op in openers)
+                    opener_part = f"with openers {opener_names}"
+            else:
+                opener_part = ""
+
+            if opener_part:
+                description = (
+                    f"Live setlist from {headliner} {opener_part} — recorded at "
+                    f"{venue_str}, {city_str} on {date_str}."
+                )
+            else:
+                description = (
+                    f"Live setlist from {headliner} — recorded at "
+                    f"{venue_str}, {city_str} on {date_str}."
+                )
 
             playlist_name = f"{artist} - {date}"
             pid = self._build_playlist_for_event(
@@ -206,7 +225,6 @@ class PlaylistBuilder:
                 track_uris,
                 description=description
             )
-
 
             if self.dry_run:
                 log(f"[DRY-RUN] Playlist NOT created: {playlist_name}")
