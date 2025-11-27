@@ -136,3 +136,23 @@ def _api(method, path, params=None, json=None):
         return resp.json()
     except Exception as ex:
         raise RuntimeError(f"Invalid JSON from Spotify: {resp.text}")
+
+def search_track(query, limit=10):
+    """
+    Search Spotify tracks using the /search endpoint.
+    Wraps _api() so token refresh + logging still work.
+    """
+    params = {
+        "q": query,
+        "type": "track",
+        "limit": limit,
+    }
+
+    try:
+        data = _api("GET", "/search", params=params)
+    except Exception as ex:
+        _log(f"Track search failed for query='{query}': {ex}")
+        raise
+
+    # Spotify returns { "tracks": { "items": [...] } }
+    return data.get("tracks", {}).get("items", [])
