@@ -34,7 +34,9 @@ def main():
         service_account_json=google_sa_json
     )
 
-    pb = PlaylistBuilder(spotify, sheets, setlist_key)
+    # 🔥 Enable full Setlist.fm debug logging
+    pb = PlaylistBuilder(spotify, sheets, setlist_key, debug=True)
+
     pb.run()
 
 
