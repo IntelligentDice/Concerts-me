@@ -191,8 +191,20 @@ class PlaylistBuilder:
             except Exception:
                 user_id = "me"
 
+            # Build detailed playlist description (Option 1)
+            description = (
+                f"Live setlist for {artist} at {venue} in {city} on {date}. "
+                f"Includes opener bands and full show order."
+            )
+
             playlist_name = f"{artist} - {date}"
-            pid = self._build_playlist_for_event(user_id, playlist_name, track_uris)
+            pid = self._build_playlist_for_event(
+                user_id,
+                playlist_name,
+                track_uris,
+                description=description
+            )
+
 
             if self.dry_run:
                 log(f"[DRY-RUN] Playlist NOT created: {playlist_name}")
