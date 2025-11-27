@@ -68,13 +68,28 @@ class PlaylistBuilder:
             log(*a)
 
     def _build_playlist_for_event(self, user_id: str, playlist_name: str, track_uris: List[str]):
+        if self.dry_run:
+            log(f"[DRY-RUN] Would create playlist '{playlist_name}' with {len(track_uris)} tracks")
+            for u in track_uris:
+                log(f"[DRY-RUN]   Track -> {u}")
+            return "dry-run-playlist-id"
+
         log(f"Creating playlist {playlist_name} with {len(track_uris)} tracks")
-        pid = self.spotify.create_playlist(user_id, playlist_name, public=False, description="Auto-generated concert playlist")
+
+        pid = self.spotify.create_playlist(
+            user_id,
+            playlist_name,
+            public=False,
+            description="Auto-generated concert playlist"
+        )
+
         if not pid:
             raise RuntimeError("Failed to create playlist")
+
         ok = self.spotify.add_tracks_to_playlist(pid, track_uris)
         if not ok:
             warn("Failed to add tracks to playlist")
+
         return pid
 
     def run(self):
