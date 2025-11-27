@@ -26,3 +26,7 @@ class SpotifyClient:
 
     def add_tracks(self, playlist_id, uris):
         return spotify_api.add_tracks_to_playlist(playlist_id, uris)
+
+    # ⭐ NEW METHOD (PlaylistBuilder expects this exact name)
+    def add_tracks_to_playlist(self, playlist_id, uris):
+        return spotify_api.add_tracks_to_playlist(playlist_id, uris)
