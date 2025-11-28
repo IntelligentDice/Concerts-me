@@ -26,7 +26,9 @@ def process_events(events, dry_run=False):
         "festivals_processed": 0,
         "total_songs_matched": 0,
         "total_failed_matches": 0,
-        "events_skipped": 0
+        "events_skipped": 0,
+        "skipped_reasons": [],
+        "failed_songs": []
     }
     
     for idx, event in enumerate(events, 1):
@@ -41,8 +43,10 @@ def process_events(events, dry_run=False):
         setlist_data = get_setlist_for_event(event)
         
         if not setlist_data:
-            print(f"[WARN] No setlist data found for {event['artist']}, skipping...")
+            reason = f"{event['artist']} on {event['date']}: No setlist data found"
+            print(f"[WARN] {reason}")
             stats["events_skipped"] += 1
+            stats["skipped_reasons"].append(reason)
             continue
         
         # Extract songs from setlist
@@ -70,8 +74,10 @@ def process_events(events, dry_run=False):
             all_songs.extend([{"name": song, "artist": headliner_name} for song in headliner_songs])
         
         if not all_songs:
-            print(f"[WARN] No songs found in setlist for {event['artist']}, skipping...")
+            reason = f"{event['artist']} on {event['date']}: No songs found in setlist"
+            print(f"[WARN] {reason}")
             stats["events_skipped"] += 1
+            stats["skipped_reasons"].append(reason)
             continue
         
         print(f"[INFO] Total songs to match: {len(all_songs)}")
@@ -92,6 +98,8 @@ def process_events(events, dry_run=False):
                 matched_count += 1
             else:
                 failed_count += 1
+                failed_song = f"{song_name} by {artist_name} ({event['artist']} - {event['date']})"
+                stats["failed_songs"].append(failed_song)
                 print(f"[WARN] Failed to match: {song_name} by {artist_name}")
         
         stats["total_songs_matched"] += matched_count
@@ -100,8 +108,10 @@ def process_events(events, dry_run=False):
         print(f"[INFO] Matched {matched_count}/{len(all_songs)} songs ({failed_count} failed)")
         
         if not track_uris:
-            print(f"[WARN] No tracks matched for {event['artist']}, skipping playlist creation...")
+            reason = f"{event['artist']} on {event['date']}: No tracks matched on Spotify"
+            print(f"[WARN] {reason}")
             stats["events_skipped"] += 1
+            stats["skipped_reasons"].append(reason)
             continue
         
         # Generate playlist name and description
@@ -150,5 +160,21 @@ def process_events(events, dry_run=False):
         success_rate = (stats["total_songs_matched"] / 
                        (stats["total_songs_matched"] + stats["total_failed_matches"])) * 100
         print(f"Match success rate: {success_rate:.1f}%")
+    
+    # Print details of skipped events
+    if stats["skipped_reasons"]:
+        print("\n" + "-"*60)
+        print("SKIPPED EVENTS:")
+        print("-"*60)
+        for reason in stats["skipped_reasons"]:
+            print(f"  - {reason}")
+    
+    # Print details of failed song matches
+    if stats["failed_songs"]:
+        print("\n" + "-"*60)
+        print("FAILED SONG MATCHES:")
+        print("-"*60)
+        for song in stats["failed_songs"]:
+            print(f"  - {song}")
     
     print("="*60)
