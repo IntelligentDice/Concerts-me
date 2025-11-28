@@ -19,7 +19,7 @@ def fetch_events_from_sheet():
     """
     try:
         # Load credentials from environment variable
-        credentials_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
+        credentials_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         sheet_id = os.getenv("GOOGLE_SHEET_ID")
         
         if not credentials_json or not sheet_id:
