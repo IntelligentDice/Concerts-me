@@ -19,7 +19,7 @@ def main():
         "SPOTIFY_CLIENT_ID",
         "SPOTIFY_CLIENT_SECRET",
         "SPOTIFY_REFRESH_TOKEN",
-        "GOOGLE_SHEETS_CREDENTIALS_JSON",
+        "GOOGLE_SERVICE_ACCOUNT_JSON",
         "GOOGLE_SHEET_ID"
     ]
     
