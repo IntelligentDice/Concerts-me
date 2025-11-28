@@ -187,29 +187,39 @@ class SpotifyClient:
             return []
         
         playlists = []
-        url = "/me/playlists"
+        endpoint = "/me/playlists"
+        params = {"limit": 50}
         
-        while url:
-            data = self._make_request("GET", url)
+        while endpoint:
+            data = self._make_request("GET", endpoint, params=params)
             if not data:
                 break
             
             playlists.extend(data.get("items", []))
-            url = data.get("next")
-            if url:
+            
+            # Check for next page
+            next_url = data.get("next")
+            if next_url:
                 # Extract path from full URL
-                url = url.replace("https://api.spotify.com/v1", "")
+                endpoint = next_url.replace("https://api.spotify.com/v1", "")
+                params = {}  # Parameters are already in the URL
+            else:
+                endpoint = None
         
+        print(f"[DEBUG] Retrieved {len(playlists)} total playlists")
         return playlists
     
     def find_playlist_by_name(self, name):
         """Find an existing playlist by exact name match."""
+        print(f"[DEBUG] Searching for existing playlist: {name}")
         playlists = self.get_user_playlists()
         
         for playlist in playlists:
             if playlist["name"] == name:
+                print(f"[DEBUG] Found existing playlist: {name} (ID: {playlist['id']})")
                 return playlist["id"]
         
+        print(f"[DEBUG] No existing playlist found for: {name}")
         return None
     
     def create_playlist(self, name, description="", track_uris=None):
