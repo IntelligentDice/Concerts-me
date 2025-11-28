@@ -51,7 +51,7 @@ def get_setlist_for_event(event):
     is_festival = event["is_festival"]
     event_name = event.get("event_name", "")
     
-    # Convert date from YYYY-MM-DD to MM-DD-YYYY for API
+    # Convert date from YYYY-MM-DD to DD-MM-YYYY for API
     try:
         date_obj = datetime.strptime(date, "%Y-%m-%d")
         api_date = date_obj.strftime("%d-%m-%Y")
@@ -59,12 +59,12 @@ def get_setlist_for_event(event):
         print(f"[ERROR] Invalid date format for {artist}: {date}")
         return None
     
-    # Search for setlists
-    print(f"[DEBUG] Searching setlists for {artist} on {api_date}")
+    # Search for setlists at this venue/city/date to find ALL artists
+    print(f"[DEBUG] Searching for all setlists on {api_date} in {city}")
     
     search_url = f"{BASE_URL}/search/setlists"
     params = {
-        "artistName": artist,
+        "cityName": city,
         "date": api_date
     }
     
@@ -76,53 +76,29 @@ def get_setlist_for_event(event):
         setlists = data.get("setlist", [])
         
         if not setlists:
-            print(f"[WARN] No setlists found for {artist} on {date}")
+            print(f"[WARN] No setlists found for {city} on {date}")
             return None
         
-        # Filter and match setlists
-        best_match = None
-        best_score = 0
-        
+        # Filter setlists by venue match
+        matching_setlists = []
         for setlist in setlists:
-            score = 0
-            
-            # Match artist name
-            setlist_artist = setlist.get("artist", {}).get("name", "")
-            artist_score = fuzzy_match_score(artist, setlist_artist)
-            score += artist_score * 2  # Artist match is most important
-            
-            # Match venue
             setlist_venue = setlist.get("venue", {}).get("name", "")
-            if venue:
-                venue_score = fuzzy_match_score(venue, setlist_venue)
-                score += venue_score
-            
-            # Match city
             setlist_city = setlist.get("venue", {}).get("city", {}).get("name", "")
-            if city:
-                city_score = fuzzy_match_score(city, setlist_city)
-                score += city_score
             
-            # Match event name (if provided)
-            setlist_event_name = setlist.get("eventName", "")
-            if event_name:
-                event_score = fuzzy_match_score(event_name, setlist_event_name)
-                score += event_score
+            venue_score = fuzzy_match_score(venue, setlist_venue) if venue else 100
+            city_score = fuzzy_match_score(city, setlist_city)
             
-            print(f"[DEBUG] Setlist match score: {score:.1f} for {setlist_artist} at {setlist_venue}")
-            
-            if score > best_score:
-                best_score = score
-                best_match = setlist
+            # Must match venue and city reasonably well
+            if venue_score >= 70 and city_score >= 70:
+                matching_setlists.append(setlist)
+                print(f"[DEBUG] Found setlist: {setlist.get('artist', {}).get('name', 'Unknown')} at {setlist_venue}")
         
-        if not best_match:
-            print(f"[WARN] No matching setlist found for {artist}")
+        if not matching_setlists:
+            print(f"[WARN] No matching setlists found for venue: {venue}")
             return None
         
-        print(f"[INFO] Best match: {best_match.get('artist', {}).get('name', 'Unknown')} (score: {best_score:.1f})")
-        
-        # Parse setlist
-        return parse_setlist(best_match, is_festival, event)
+        # Parse setlists to build lineup
+        return parse_multi_artist_setlists(matching_setlists, artist, is_festival, event)
         
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] API request failed for {artist}: {e}")
@@ -132,19 +108,19 @@ def get_setlist_for_event(event):
         return None
 
 
-def parse_setlist(setlist, is_festival, event):
+def parse_multi_artist_setlists(setlists, headliner_name, is_festival, event):
     """
-    Parse a setlist into a unified format.
+    Parse multiple setlists from the same show to identify headliner and openers.
+    
+    Args:
+        setlists: List of setlist objects from the same venue/date
+        headliner_name: Expected headliner name
+        is_festival: Boolean
+        event: Event dictionary
     
     Returns:
-        Dictionary with headliner, openers, festival info, etc.
+        Dictionary with headliner, openers, etc.
     """
-    sets = setlist.get("sets", {}).get("set", [])
-    
-    if not sets:
-        print("[WARN] No sets found in setlist")
-        return None
-    
     result = {
         "headliner": {"name": "", "songs": []},
         "openers": [],
@@ -154,70 +130,54 @@ def parse_setlist(setlist, is_festival, event):
         "lineup": []
     }
     
-    if is_festival:
-        # Festival mode: extract all artists and their songs
-        festival_name = event.get("artist", "")
-        result["festival_name"] = festival_name
-        result["festival_day_label"] = f"{festival_name}"
+    all_artists = []
+    
+    for setlist in setlists:
+        artist_name = setlist.get("artist", {}).get("name", "")
+        sets = setlist.get("sets", {}).get("set", [])
         
-        all_artists = []
-        
+        all_songs = []
         for set_data in sets:
-            set_name = set_data.get("name", "")
-            songs = set_data.get("song", [])
-            
-            # Check if this set has an encore attribute or is labeled as an artist
-            if songs:
-                # For festivals, each set typically represents a different artist
-                artist_name = set_name if set_name else "Unknown Artist"
-                song_list = [song.get("name", "") for song in songs if song.get("name")]
-                
-                if song_list:
-                    all_artists.append({
-                        "name": artist_name,
-                        "songs": song_list
-                    })
-                    result["lineup"].append(artist_name)
-        
-        # Assign headliner as last artist, rest as openers
-        if all_artists:
-            result["headliner"] = all_artists[-1]
-            result["openers"] = all_artists[:-1] if len(all_artists) > 1 else []
-        
-    else:
-        # Normal concert mode - check for openers and main artist
-        main_artist = setlist.get("artist", {}).get("name", event.get("artist", "Unknown"))
-        main_songs = []
-        openers = []
-        
-        # Setlist.fm typically structures multi-artist shows with multiple sets
-        # or uses set names/encore to distinguish
-        for set_data in sets:
-            set_name = set_data.get("name", "")
-            is_encore = set_data.get("encore", 0)
             songs = set_data.get("song", [])
             song_names = [song.get("name", "") for song in songs if song.get("name")]
-            
-            # If set name indicates a different artist (not encore, not empty)
-            # treat it as an opener
-            if set_name and set_name.lower() not in ["", "setlist", "encore", "main set"] and not is_encore:
-                # Check if set name is different from main artist
-                if fuzzy_match_score(set_name, main_artist) < 80:
-                    openers.append({
-                        "name": set_name,
-                        "songs": song_names
-                    })
-                    print(f"[DEBUG] Found opener: {set_name} with {len(song_names)} songs")
-                else:
-                    main_songs.extend(song_names)
-            else:
-                # Main artist songs
-                main_songs.extend(song_names)
+            all_songs.extend(song_names)
         
-        result["headliner"] = {
-            "name": main_artist,
-            "songs": main_songs
-        }
-        result["openers"] = openers
+        if all_songs:
+            all_artists.append({
+                "name": artist_name,
+                "songs": all_songs
+            })
+            print(f"[INFO] Found artist: {artist_name} with {len(all_songs)} songs")
+    
+    if not all_artists:
+        return None
+    
+    if is_festival:
+        festival_name = event.get("artist", "")
+        result["festival_name"] = festival_name
+        result["festival_day_label"] = festival_name
+        result["lineup"] = [a["name"] for a in all_artists]
+        
+        # Headliner is last, rest are openers
+        result["headliner"] = all_artists[-1]
+        result["openers"] = all_artists[:-1] if len(all_artists) > 1 else []
+    else:
+        # Find the headliner by fuzzy matching
+        headliner_idx = -1
+        best_match_score = 0
+        
+        for idx, artist_data in enumerate(all_artists):
+            score = fuzzy_match_score(headliner_name, artist_data["name"])
+            if score > best_match_score:
+                best_match_score = score
+                headliner_idx = idx
+        
+        if headliner_idx >= 0:
+            result["headliner"] = all_artists[headliner_idx]
+            result["openers"] = [a for i, a in enumerate(all_artists) if i != headliner_idx]
+        else:
+            # Default to last artist as headliner
+            result["headliner"] = all_artists[-1]
+            result["openers"] = all_artists[:-1] if len(all_artists) > 1 else []
     
     return result
