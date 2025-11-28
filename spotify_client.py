@@ -211,9 +211,28 @@ class SpotifyClient:
                 data = response.json()
                 
                 print(f"[DEBUG] Response keys: {list(data.keys())}")
+                print(f"[DEBUG] Total playlists (from API): {data.get('total', 'N/A')}")
                 
                 items = data.get("items", [])
                 print(f"[DEBUG] Items in response: {len(items)}")
+                
+                # Check if we have permission issues
+                if data.get("total", 0) > 0 and len(items) == 0:
+                    print("[ERROR] ============================================")
+                    print("[ERROR] SPOTIFY PERMISSION ERROR DETECTED!")
+                    print("[ERROR] The API reports playlists exist but returns 0 items.")
+                    print("[ERROR] This means your refresh token is missing required scopes.")
+                    print("[ERROR] ")
+                    print("[ERROR] Required scopes:")
+                    print("[ERROR]   - playlist-read-private")
+                    print("[ERROR]   - playlist-read-collaborative")
+                    print("[ERROR]   - playlist-modify-private")
+                    print("[ERROR]   - playlist-modify-public")
+                    print("[ERROR] ")
+                    print("[ERROR] You need to regenerate your SPOTIFY_REFRESH_TOKEN")
+                    print("[ERROR] with these scopes included.")
+                    print("[ERROR] ============================================")
+                    return []
                 
                 if items:
                     print(f"[DEBUG] First playlist: {items[0].get('name', 'NO NAME')}")
