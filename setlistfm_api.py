@@ -184,4 +184,154 @@ class SetlistFM:
         if resp and resp.status_code == 200:
             artist_entries = resp.json().get("setlist", []) or []
 
-        # find exac
+        # find exact date match
+        headliner_entry = None
+        for e in artist_entries:
+            if e.get("eventDate") == date_ddmm:
+                headliner_entry = e
+                break
+
+        # -------------------------
+        # 2. If no headliner found → FESTIVAL MODE
+        # -------------------------
+        if not headliner_entry:
+            festival_entries = self.search_setlists_festival_mode(venue, city, date)
+            if festival_entries and len(festival_entries) >= 3:
+                lineup = []
+                for e in festival_entries:
+                    lineup.append(self._gather_basic_entry(e))
+
+                # dedupe by artist name
+                seen = set()
+                deduped = []
+                for b in lineup:
+                    nm = (b.get("name") or "").strip().lower()
+                    if nm and nm not in seen:
+                        seen.add(nm)
+                        deduped.append(b)
+
+                return {
+                    "is_festival": True,
+                    "festival_name": artist,
+                    "event_name": None,
+                    "venue": venue,
+                    "city": city,
+                    "date": date,
+                    "lineup": deduped,
+                }
+
+            return None
+
+        # -------------------------
+        # 3. Normal show: use venue+date query to find full lineup
+        # -------------------------
+        resolved_venue = headliner_entry.get("venue", {}).get("name", "") or venue
+        resolved_city = headliner_entry.get("venue", {}).get("city", {}).get("name", "") or city
+
+        festival_entries = self.search_setlists_festival_mode(resolved_venue, resolved_city, date)
+
+        if not festival_entries:
+            return None
+
+        # If 3+ entries → still a festival, even though the artist was found
+        if len(festival_entries) >= 3:
+            lineup = []
+            for e in festival_entries:
+                lineup.append(self._gather_basic_entry(e))
+
+            seen = set()
+            deduped = []
+            for b in lineup:
+                nm = (b.get("name") or "").strip().lower()
+                if nm and nm not in seen:
+                    seen.add(nm)
+                    deduped.append(b)
+
+            return {
+                "is_festival": True,
+                "festival_name": artist,
+                "event_name": None,
+                "venue": resolved_venue,
+                "city": resolved_city,
+                "date": date,
+                "lineup": deduped,
+            }
+
+        # -------------------------
+        # 4. NOT festival → Single event logic
+        # -------------------------
+        # Build map: artist → songs, meta
+        artists_map = {}
+        for entry in festival_entries:
+            nm = entry.get("artist", {}).get("name", "")
+            if not nm:
+                continue
+            key = nm.lower()
+
+            if key not in artists_map:
+                artists_map[key] = {
+                    "name": nm,
+                    "songs": [],
+                    "startTime": None,
+                    "lastUpdated": None,
+                }
+
+            # songs
+            songs = self._extract_songs(entry)
+            for s in songs:
+                if s not in artists_map[key]["songs"]:
+                    artists_map[key]["songs"].append(s)
+
+            # metadata
+            sets = entry.get("sets", {}).get("set", [])
+            if not isinstance(sets, list):
+                sets = [sets] if sets else []
+            for s in sets:
+                st = s.get("startTime") or s.get("start")
+                if st and not artists_map[key]["startTime"]:
+                    artists_map[key]["startTime"] = st
+            lu = entry.get("lastUpdated") or entry.get("lastUpdatedAt")
+            if lu and not artists_map[key]["lastUpdated"]:
+                artists_map[key]["lastUpdated"] = lu
+
+        # Determine headliner
+        norm_target = _norm_text(artist)
+        scored = []
+        for rec in artists_map.values():
+            score = fuzz.token_set_ratio(norm_target, _norm_text(rec["name"]))
+            scored.append((score, rec["name"], rec))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        if not scored:
+            return None
+
+        if scored[0][0] >= headliner_threshold:
+            headliner_name = scored[0][1]
+            headliner_songs = scored[0][2]["songs"]
+        else:
+            # fallback: longest set
+            scored.sort(key=lambda x: len(x[2]["songs"]), reverse=True)
+            headliner_name = scored[0][1]
+            headliner_songs = scored[0][2]["songs"]
+
+        # Collect openers
+        openers = []
+        for sc, nm, rec in scored:
+            if nm != headliner_name:
+                openers.append({
+                    "name": rec["name"],
+                    "songs": rec["songs"],
+                    "startTime": rec["startTime"],
+                    "lastUpdated": rec["lastUpdated"],
+                })
+
+        return {
+            "is_festival": False,
+            "headliner": headliner_name,
+            "headliner_songs": headliner_songs,
+            "openers": openers,
+            "venue": resolved_venue,
+            "city": resolved_city,
+            "date": date,
+        }
