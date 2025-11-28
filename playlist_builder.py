@@ -156,17 +156,17 @@ class PlaylistBuilder:
                 continue
 
             # ---------------------------------------------------------
-            # FESTIVAL MODE
+            # FESTIVAL MODE  (ONLY if explicitly flagged in the sheet)
             # ---------------------------------------------------------
             is_festival_flag = str(ev.get("is_festival", "")).strip().lower() in ("true", "yes", "1")
 
-            if event_data.get("is_festival") or is_festival_flag:
-                # Prefer event_data values, but allow sheet flag to force festival mode
+            # STRICT: festival mode runs ONLY when the sheet flag is true
+            if is_festival_flag:
                 festival_name = event_data.get("festival_name") or artist
                 festival_day_label = event_name or festival_name
-                self._log(f"[INFO] Festival detected: {festival_day_label} on {date}")
+                self._log(f"[INFO] Festival flagged in sheet: {festival_day_label} on {date}")
 
-                # setlist API returned lineup entries under 'lineup' or the code may return raw entries
+                # Use setlistfm-provided lineup if available
                 festival_lineup = event_data.get("lineup") or []
 
                 if not festival_lineup:
