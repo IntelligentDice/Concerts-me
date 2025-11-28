@@ -1,165 +1,316 @@
-# spotify_client.py
+"""
+Spotify API client module.
+Handles authentication, track searching, and playlist management.
+"""
+
 import os
-import time
-import logging
-from typing import List, Optional, Any, Callable
-
-import spotify_api  # existing module in repo (thin wrapper over Spotify HTTP calls)
-
-LOG = logging.getLogger("spotify_client")
-
-
-def _retryable(max_attempts=4, initial_backoff=1.0, backoff_factor=2.0, retry_on=(Exception,)):
-    """
-    Simple retry decorator with exponential backoff. Catches listed exception types.
-    """
-    def deco(fn: Callable):
-        def wrapper(*args, **kwargs):
-            attempt = 0
-            backoff = initial_backoff
-            last_exc = None
-            while attempt < max_attempts:
-                try:
-                    return fn(*args, **kwargs)
-                except retry_on as e:
-                    last_exc = e
-                    attempt += 1
-                    if attempt >= max_attempts:
-                        LOG.exception("Retry exhausted for %s", fn.__name__)
-                        raise
-                    LOG.warning("Transient failure in %s: %s — retrying in %.1fs (attempt %d/%d)",
-                                fn.__name__, e, backoff, attempt, max_attempts)
-                    time.sleep(backoff)
-                    backoff *= backoff_factor
-            # if loop falls through
-            raise last_exc
-        return wrapper
-    return deco
+import re
+import requests
+from rapidfuzz import fuzz
 
 
 class SpotifyClient:
-    """
-    Thin wrapper so PlaylistBuilder can use object-style calls.
-    Adds:
-      - retrying for transient errors
-      - bulk add (100 tracks per request)
-      - helpful diagnostics passthroughs
-    Assumes an underlying `spotify_api` module is present and implements:
-      - get_current_user_id()
-      - search_track(q, limit)
-      - create_playlist(user_id, name, public, description)
-      - add_tracks_to_playlist(playlist_id, uris)    (may accept <=100 uris)
-      - find_playlist_by_name(name) -> playlist_id or None  (optional)
-    """
-
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str, redirect_uri: Optional[str] = None):
-        # keep environment variables for modules that expect them
-        os.environ["SPOTIFY_CLIENT_ID"] = client_id
-        os.environ["SPOTIFY_CLIENT_SECRET"] = client_secret
-        os.environ["SPOTIFY_REFRESH_TOKEN"] = refresh_token
-        if redirect_uri:
-            os.environ["SPOTIFY_REDIRECT_URI"] = redirect_uri
-        self.redirect_uri = redirect_uri
-
-    # ---------- passthroughs with light retry ----------
-    @_retryable(max_attempts=4, initial_backoff=1.0, backoff_factor=2.0, retry_on=(Exception,))
-    def get_current_user_id(self) -> str:
-        if hasattr(spotify_api, "get_current_user_id"):
-            return spotify_api.get_current_user_id()
-        raise RuntimeError("spotify_api.get_current_user_id not implemented")
-
-    @_retryable(max_attempts=4, initial_backoff=0.8, backoff_factor=2.0, retry_on=(Exception,))
-    def search_track(self, q: str, limit: int = 8) -> List[dict]:
-        if hasattr(spotify_api, "search_track"):
-            return spotify_api.search_track(q, limit)
-        # fallback to generic /search if available
-        if hasattr(spotify_api, "_api"):
-            # best-effort: call /search endpoint
-            params = {"q": q, "type": "track", "limit": limit}
-            return spotify_api._api("GET", "/search", params=params).get("tracks", {}).get("items", [])
-        raise RuntimeError("spotify_api.search_track not available")
-
-    @_retryable(max_attempts=4, initial_backoff=1.0, backoff_factor=2.0, retry_on=(Exception,))
-    def create_playlist(self, user_id: str, name: str, public: bool = False, description: str = "") -> Optional[str]:
-        if hasattr(spotify_api, "create_playlist"):
-            return spotify_api.create_playlist(user_id, name, public, description)
-        # fallback to raw _api if available
-        if hasattr(spotify_api, "_api"):
-            body = {"name": name, "public": public, "description": description}
-            resp = spotify_api._api("POST", f"/users/{user_id}/playlists", json=body)
-            return resp.get("id")
-        raise RuntimeError("spotify_api.create_playlist not available")
-
-    def _chunked(self, seq: List[Any], n: int):
-        for i in range(0, len(seq), n):
-            yield seq[i:i + n]
-
-    @_retryable(max_attempts=4, initial_backoff=1.0, backoff_factor=2.0, retry_on=(Exception,))
-    def add_tracks_to_playlist(self, playlist_id: str, uris: List[str]) -> bool:
-        """
-        Add tracks in chunks of 100 (Spotify limit). Returns True if all requests succeed.
-        """
-        if not uris:
-            return True
-
-        # Prefer high-level function if available
-        add_fn = None
-        if hasattr(spotify_api, "add_tracks_to_playlist"):
-            add_fn = spotify_api.add_tracks_to_playlist
-        elif hasattr(spotify_api, "_api"):
-            # we'll implement an ad-hoc POST to /playlists/{playlist_id}/tracks
-            def add_fn(pid, chunk):
-                return spotify_api._api("POST", f"/playlists/{pid}/tracks", json={"uris": chunk})
-        else:
-            raise RuntimeError("spotify_api.add_tracks_to_playlist or _api required for adding tracks")
-
-        success = True
-        for chunk in self._chunked(uris, 100):
-            try:
-                res = add_fn(playlist_id, chunk)
-                # spotify_api.add_tracks_to_playlist may return truthy or the response dict
-                if res is False or res is None:
-                    LOG = logging.getLogger("spotify_client")
-                    LOG.warning("add_tracks chunk returned falsy: %s", res)
-                    success = False
-                # otherwise assume ok
-            except Exception as e:
-                logging.getLogger("spotify_client").exception("Failed to add chunk to playlist: %s", e)
-                raise
-        return success
-
-    # Backwards-compat convenience
-    def add_tracks(self, playlist_id: str, uris: List[str]) -> bool:
-        return self.add_tracks_to_playlist(playlist_id, uris)
-
-    # Optional helper used by PlaylistBuilder to avoid duplicate playlists
-    def find_playlist_by_name(self, name: str) -> Optional[str]:
-        """
-        Try to use spotify_api.find_playlist_by_name if available, otherwise try a best-effort scan
-        (may be slower). Returns playlist id or None.
-        """
-        if hasattr(spotify_api, "find_playlist_by_name"):
-            return spotify_api.find_playlist_by_name(name)
-
-        # best-effort scan via current user's playlists
+    """Client for interacting with Spotify Web API."""
+    
+    def __init__(self, dry_run=False):
+        """Initialize Spotify client."""
+        self.client_id = os.getenv("SPOTIFY_CLIENT_ID")
+        self.client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+        self.refresh_token = os.getenv("SPOTIFY_REFRESH_TOKEN")
+        self.dry_run = dry_run
+        
+        if not all([self.client_id, self.client_secret, self.refresh_token]):
+            raise ValueError("Missing Spotify credentials")
+        
+        self.access_token = None
+        self.cache = {"song_to_spotify": {}}
+        
+        # Refresh access token on init
+        self._refresh_access_token()
+    
+    def _refresh_access_token(self):
+        """Refresh the Spotify access token using refresh token."""
+        print("[DEBUG] Refreshing Spotify access token...")
+        
+        token_url = "https://accounts.spotify.com/api/token"
+        
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret
+        }
+        
         try:
-            if hasattr(spotify_api, "_api"):
-                # fetch current user id
-                user = self.get_current_user_id()
-                # iterate user's playlists pages (50 per page)
-                limit = 50
-                offset = 0
-                while True:
-                    resp = spotify_api._api("GET", f"/users/{user}/playlists", params={"limit": limit, "offset": offset})
-                    items = resp.get("items", []) or []
-                    if not items:
-                        break
-                    for p in items:
-                        if p.get("name") == name:
-                            return p.get("id")
-                    if len(items) < limit:
-                        break
-                    offset += limit
-        except Exception:
-            logging.getLogger("spotify_client").exception("find_playlist_by_name fallback failed")
+            response = requests.post(token_url, data=data, timeout=10)
+            response.raise_for_status()
+            token_data = response.json()
+            
+            self.access_token = token_data["access_token"]
+            print("[INFO] Spotify access token refreshed successfully")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to refresh Spotify token: {e}")
+            raise
+    
+    def _make_request(self, method, endpoint, **kwargs):
+        """Make an authenticated request to Spotify API."""
+        if not self.access_token:
+            self._refresh_access_token()
+        
+        url = f"https://api.spotify.com/v1{endpoint}"
+        headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            response = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+            
+            # Handle token expiration
+            if response.status_code == 401:
+                print("[DEBUG] Token expired, refreshing...")
+                self._refresh_access_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                response = requests.request(method, url, headers=headers, timeout=10, **kwargs)
+            
+            response.raise_for_status()
+            return response.json() if response.content else {}
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Spotify API request failed: {e}")
+            return None
+    
+    def clean_song_title(self, title):
+        """Clean song title for better matching."""
+        # Remove content in parentheses
+        title = re.sub(r'\([^)]*\)', '', title)
+        # Remove content in brackets
+        title = re.sub(r'\[[^\]]*\]', '', title)
+        # Remove extra whitespace
+        title = ' '.join(title.split())
+        return title.strip()
+    
+    def search_track(self, song_name, artist_name=""):
+        """
+        Search for a track on Spotify with fuzzy matching.
+        
+        Args:
+            song_name: Name of the song
+            artist_name: Optional artist name for better matching
+        
+        Returns:
+            Spotify track URI or None
+        """
+        # Check cache first
+        cache_key = f"{song_name}|{artist_name}".lower()
+        if cache_key in self.cache["song_to_spotify"]:
+            print(f"[DEBUG] Cache hit for: {song_name}")
+            return self.cache["song_to_spotify"][cache_key]
+        
+        # Try multiple search strategies
+        search_queries = [
+            f"{song_name} {artist_name}".strip(),
+            self.clean_song_title(song_name) + f" {artist_name}".strip(),
+            song_name,
+            self.clean_song_title(song_name)
+        ]
+        
+        best_match = None
+        best_score = 0
+        
+        for query in search_queries:
+            if not query.strip():
+                continue
+            
+            print(f"[DEBUG] Searching Spotify for: {query}")
+            
+            params = {
+                "q": query,
+                "type": "track",
+                "limit": 10
+            }
+            
+            data = self._make_request("GET", "/search", params=params)
+            
+            if not data or "tracks" not in data:
+                continue
+            
+            tracks = data["tracks"]["items"]
+            
+            for track in tracks:
+                track_name = track["name"]
+                track_artist = track["artists"][0]["name"] if track["artists"] else ""
+                track_uri = track["uri"]
+                
+                # Calculate fuzzy match score
+                name_score = fuzz.ratio(song_name.lower(), track_name.lower())
+                
+                # Bonus for artist match
+                artist_score = 0
+                if artist_name:
+                    artist_score = fuzz.ratio(artist_name.lower(), track_artist.lower())
+                
+                total_score = name_score + (artist_score * 0.3)
+                
+                print(f"[DEBUG] Match candidate: {track_name} by {track_artist} (score: {total_score:.1f})")
+                
+                if total_score > best_score:
+                    best_score = total_score
+                    best_match = track_uri
+            
+            # If we found a good match, stop searching
+            if best_score >= 60:
+                break
+        
+        # Cache the result
+        if best_match and best_score >= 60:
+            self.cache["song_to_spotify"][cache_key] = best_match
+            print(f"[INFO] Matched '{song_name}' with score {best_score:.1f}")
+            return best_match
+        else:
+            print(f"[WARN] No good match found for '{song_name}' (best score: {best_score:.1f})")
+            self.cache["song_to_spotify"][cache_key] = None
+            return None
+    
+    def get_user_id(self):
+        """Get the current user's Spotify ID."""
+        data = self._make_request("GET", "/me")
+        if data:
+            return data.get("id")
         return None
+    
+    def get_user_playlists(self):
+        """Get all playlists for the current user."""
+        user_id = self.get_user_id()
+        if not user_id:
+            return []
+        
+        playlists = []
+        url = "/me/playlists"
+        
+        while url:
+            data = self._make_request("GET", url)
+            if not data:
+                break
+            
+            playlists.extend(data.get("items", []))
+            url = data.get("next")
+            if url:
+                # Extract path from full URL
+                url = url.replace("https://api.spotify.com/v1", "")
+        
+        return playlists
+    
+    def find_playlist_by_name(self, name):
+        """Find an existing playlist by exact name match."""
+        playlists = self.get_user_playlists()
+        
+        for playlist in playlists:
+            if playlist["name"] == name:
+                return playlist["id"]
+        
+        return None
+    
+    def create_playlist(self, name, description="", track_uris=None):
+        """
+        Create a new Spotify playlist.
+        
+        Args:
+            name: Playlist name
+            description: Playlist description
+            track_uris: List of Spotify track URIs
+        
+        Returns:
+            Playlist ID or None
+        """
+        if self.dry_run:
+            print(f"[DRY RUN] Would create playlist: {name}")
+            print(f"[DRY RUN] Description: {description}")
+            print(f"[DRY RUN] Tracks: {len(track_uris) if track_uris else 0}")
+            return "dry_run_playlist_id"
+        
+        user_id = self.get_user_id()
+        if not user_id:
+            print("[ERROR] Could not get user ID")
+            return None
+        
+        # Create playlist
+        data = {
+            "name": name,
+            "description": description,
+            "public": False
+        }
+        
+        result = self._make_request("POST", f"/users/{user_id}/playlists", json=data)
+        
+        if not result:
+            print(f"[ERROR] Failed to create playlist: {name}")
+            return None
+        
+        playlist_id = result["id"]
+        print(f"[INFO] Created playlist: {name} (ID: {playlist_id})")
+        
+        # Add tracks if provided
+        if track_uris:
+            self.add_tracks_to_playlist(playlist_id, track_uris)
+        
+        return playlist_id
+    
+    def update_playlist(self, playlist_id, track_uris):
+        """
+        Update an existing playlist with new tracks.
+        
+        Args:
+            playlist_id: Spotify playlist ID
+            track_uris: List of Spotify track URIs
+        """
+        if self.dry_run:
+            print(f"[DRY RUN] Would update playlist {playlist_id} with {len(track_uris)} tracks")
+            return
+        
+        # Clear existing tracks
+        self._make_request("PUT", f"/playlists/{playlist_id}/tracks", json={"uris": []})
+        
+        # Add new tracks
+        self.add_tracks_to_playlist(playlist_id, track_uris)
+    
+    def add_tracks_to_playlist(self, playlist_id, track_uris):
+        """Add tracks to a playlist (max 100 at a time)."""
+        if self.dry_run:
+            print(f"[DRY RUN] Would add {len(track_uris)} tracks to playlist {playlist_id}")
+            return
+        
+        # Spotify allows max 100 tracks per request
+        for i in range(0, len(track_uris), 100):
+            batch = track_uris[i:i+100]
+            self._make_request("POST", f"/playlists/{playlist_id}/tracks", json={"uris": batch})
+        
+        print(f"[INFO] Added {len(track_uris)} tracks to playlist")
+    
+    def create_or_update_playlist(self, name, description, track_uris):
+        """
+        Create a new playlist or update existing one if it exists.
+        
+        Args:
+            name: Playlist name
+            description: Playlist description
+            track_uris: List of Spotify track URIs
+        
+        Returns:
+            Playlist ID or None
+        """
+        if not track_uris:
+            print("[WARN] No tracks to add to playlist")
+            return None
+        
+        # Check if playlist exists
+        existing_id = self.find_playlist_by_name(name)
+        
+        if existing_id:
+            print(f"[INFO] Playlist '{name}' already exists, updating...")
+            self.update_playlist(existing_id, track_uris)
+            return existing_id
+        else:
+            print(f"[INFO] Creating new playlist: {name}")
+            return self.create_playlist(name, description, track_uris)
