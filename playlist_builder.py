@@ -132,47 +132,86 @@ class PlaylistBuilder:
                 warn(f"[WARN] No matching setlist found for {artist} on {date} @ {venue}, {city}")
                 continue
 
-            # ----------------------------------------------
+            # ---------------------------------------------------------
             # FESTIVAL MODE
-            # ----------------------------------------------
-            if event_data.get("is_festival"):
-                self._log(f"[INFO] Festival mode detected for {artist} on {date}")
-                lineup = event_data.get("lineup", []) or []
+            # ---------------------------------------------------------
+            is_festival = str(ev.get("is_festival", "")).strip().lower() in ("true", "yes", "1")
 
-                # sort lineup using startTime -> stage -> lastUpdated -> name
-                def _lineup_key(b):
-                    st = self._parse_time_or_none(b.get("startTime"))
-                    stage = (b.get("stage") or "").lower() if b.get("stage") else ""
-                    lu = b.get("lastUpdated") or ""
-                    nm = (b.get("name") or "").lower()
+            if is_festival:
+                self._log(f"[INFO] Festival detected: {event_name} on {date}")
+
+                festival_day_name = ev.get("event_name") or f"{artist} Festival Day"
+
+                # 1) Fetch ALL setlists for the venue + date
+                self._log(f"[INFO] Searching festival setlists for venue={venue}, city={city}, date={date}")
+                festival_sets = self.setlist.search_setlists_festival_mode(
+                    venue=venue,
+                    city=city,
+                    date=date
+                )
+
+                if not festival_sets:
+                    warn(f"[WARN] No festival sets found for {festival_day_name} on {date}")
+
+                # 2) Parse each band into entries
+                band_entries = []   # Each entry → { name, songs[], startTime, lastUpdated }
+
+                for entry in festival_sets:
+                    band_name = entry.get("artist", {}).get("name") or None
+                    if not band_name:
+                        continue
+
+                    songs = entry.get("songs", []) or []
+                    start_time = entry.get("startTime")
+                    last_updated = entry.get("lastUpdated")
+
+                    band_entries.append({
+                        "name": band_name,
+                        "songs": songs,
+                        "startTime": start_time,
+                        "lastUpdated": last_updated,
+                    })
+
+                # 3) Sort bands by time → lastUpdated → name
+                def _parse_time_or_none(t):
+                    if not t:
+                        return None
+                    try:
+                        return tuple(map(int, t.split(":")))
+                    except:
+                        return None
+
+                def _sort_band(e):
+                    st = _parse_time_or_none(e.get("startTime"))
+                    lu = e.get("lastUpdated")
+                    nm = (e.get("name") or "").lower()
+
                     st_key = st if st else (99, 99, 99)
                     lu_key = lu if lu else "9999-99-99T99:99:99Z"
-                    return (st_key, stage, lu_key, nm)
+                    return (st_key, lu_key, nm)
 
-                ordered = sorted(lineup, key=_lineup_key)
+                band_entries = sorted(band_entries, key=_sort_band)
 
-                # Build pairs for the whole festival day (all bands)
+                # 4) Build ordered (title, artist) pairs with fallback
                 pairs = []
-                for band in ordered:
-                    name = band.get("name")
-                    songs = band.get("songs", []) or []
+                for b in band_entries:
+                    name = b["name"]
+                    songs = b["songs"]
+
                     if songs:
-                        self._log(f"[INFO] Festival band {name} has {len(songs)} songs")
+                        self._log(f"[INFO] Festival act {name} has {len(songs)} songs")
                         for s in songs:
                             pairs.append((s, name))
                     else:
-                        self._log(f"[INFO] Festival band {name} has no songs in setlist; using spotify fallback")
+                        self._log(f"[INFO] Festival act {name} missing setlist → using top 5 tracks")
                         uris = _spotify_top_tracks_fallback(name, limit=5)
                         for u in uris:
                             pairs.append((u, None))
 
-                if not pairs:
-                    warn(f"No tracks discovered for festival {artist} on {date}")
-                    continue
-
-                # Resolve to URIs
+                # 5) Convert all entries into URIs
                 track_uris = []
                 seen = set()
+
                 for title_or_uri, artist_hint in pairs:
                     if artist_hint is None and isinstance(title_or_uri, str) and title_or_uri.startswith("spotify:"):
                         if title_or_uri not in seen:
@@ -180,7 +219,7 @@ class PlaylistBuilder:
                             seen.add(title_or_uri)
                         continue
 
-                    uri, score = _best_spotify_match_for_song(title_or_uri, artist_hint or artist)
+                    uri, score = _best_spotify_match_for_song(title_or_uri, artist_hint or "")
                     if uri and uri not in seen:
                         track_uris.append(uri)
                         seen.add(uri)
@@ -189,45 +228,43 @@ class PlaylistBuilder:
                         self._log(f"[WARN] Could not match '{title_or_uri}' ({artist_hint})")
 
                 if not track_uris:
-                    warn(f"No tracks resolved for festival {artist} on {date}")
+                    warn(f"[WARN] No tracks resolved for festival day {festival_day_name}")
                     continue
 
-                # Playlist name choice: user selected "Option C": use event_name only
-                playlist_name = event_name if event_name else f"{artist} - {date}"
-                # Short description
+                # 6) Build playlist name + description
+                playlist_name = f"{festival_day_name} - {date}"
+
+                venue_str = venue or "Unknown venue"
+                city_str = city or "Unknown city"
+
                 description = (
-                    f"Festival setlists from {artist} — {event_name}. "
-                    f"Recorded at {venue or 'Unknown venue'} in {city or 'Unknown city'} on {date}."
+                    f"Recorded live at {venue_str}, {city_str} on {date}. "
+                    f"Festival day: {festival_day_name}."
                 )
-
-                # check duplicates
-                existing = None
-                try:
-                    if hasattr(self.spotify, "find_playlist_by_name"):
-                        existing = self.spotify.find_playlist_by_name(playlist_name)
-                except Exception:
-                    existing = None
-
-                if existing:
-                    if self.dry_run:
-                        log(f"[DRY-RUN] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
-                    else:
-                        log(f"[INFO] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
-                    continue
 
                 try:
                     user_id = self.spotify.get_current_user_id() or "me"
                 except Exception:
                     user_id = "me"
 
-                pid = self._build_playlist_for_event(user_id, playlist_name, track_uris, description=description)
+                pid = self._build_playlist_for_event(
+                    user_id,
+                    playlist_name,
+                    track_uris,
+                    description=description
+                )
+
                 if self.dry_run:
                     log(f"[DRY-RUN] Playlist NOT created: {playlist_name}")
                 else:
                     log(f"Playlist created: {playlist_name} (id={pid})")
 
-                # done with festival entry
+                # IMPORTANT: prevent non-festival logic from running after this
                 continue
+            # ---------------------------------------------------------
+            # END FESTIVAL MODE
+            # ---------------------------------------------------------
+
 
             # ----------------------------------------------
             # NORMAL EVENT MODE
