@@ -184,42 +184,71 @@ class SpotifyClient:
         """Get all playlists for the current user."""
         user_id = self.get_user_id()
         if not user_id:
+            print("[ERROR] Could not get user ID for playlist retrieval")
             return []
         
+        print(f"[DEBUG] Fetching playlists for user: {user_id}")
+        
         playlists = []
-        endpoint = "/me/playlists"
+        url = f"https://api.spotify.com/v1/me/playlists"
         params = {"limit": 50}
+        page = 1
         
-        while endpoint:
-            data = self._make_request("GET", endpoint, params=params)
-            if not data:
+        while url:
+            print(f"[DEBUG] Fetching playlist page {page}...")
+            
+            try:
+                response = requests.get(
+                    url,
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                    params=params,
+                    timeout=10
+                )
+                response.raise_for_status()
+                data = response.json()
+                
+                items = data.get("items", [])
+                playlists.extend(items)
+                print(f"[DEBUG] Page {page}: Retrieved {len(items)} playlists")
+                
+                # Check for next page
+                url = data.get("next")
+                params = {}  # Next URL already has params
+                page += 1
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to fetch playlists: {e}")
                 break
-            
-            playlists.extend(data.get("items", []))
-            
-            # Check for next page
-            next_url = data.get("next")
-            if next_url:
-                # Extract path from full URL
-                endpoint = next_url.replace("https://api.spotify.com/v1", "")
-                params = {}  # Parameters are already in the URL
-            else:
-                endpoint = None
         
-        print(f"[DEBUG] Retrieved {len(playlists)} total playlists")
+        print(f"[DEBUG] Total playlists retrieved: {len(playlists)}")
         return playlists
     
     def find_playlist_by_name(self, name):
         """Find an existing playlist by exact name match."""
-        print(f"[DEBUG] Searching for existing playlist: {name}")
+        print(f"[DEBUG] ==========================================")
+        print(f"[DEBUG] Searching for existing playlist: '{name}'")
+        print(f"[DEBUG] Name length: {len(name)} characters")
         playlists = self.get_user_playlists()
         
-        for playlist in playlists:
-            if playlist["name"] == name:
-                print(f"[DEBUG] Found existing playlist: {name} (ID: {playlist['id']})")
-                return playlist["id"]
+        print(f"[DEBUG] Checking against {len(playlists)} playlists...")
         
-        print(f"[DEBUG] No existing playlist found for: {name}")
+        # Show first few playlist names for debugging
+        if playlists:
+            print(f"[DEBUG] Sample of existing playlist names:")
+            for i, p in enumerate(playlists[:5]):
+                print(f"[DEBUG]   {i+1}. '{p['name']}'")
+        
+        for playlist in playlists:
+            playlist_name = playlist["name"]
+            if playlist_name == name:
+                print(f"[DEBUG] ✓ MATCH FOUND: '{playlist_name}' (ID: {playlist['id']})")
+                print(f"[DEBUG] ==========================================")
+                return playlist["id"]
+            elif name in playlist_name or playlist_name in name:
+                print(f"[DEBUG] ✗ Partial match (not exact): '{playlist_name}'")
+        
+        print(f"[DEBUG] ✗ NO MATCH FOUND for: '{name}'")
+        print(f"[DEBUG] ==========================================")
         return None
     
     def create_playlist(self, name, description="", track_uris=None):
