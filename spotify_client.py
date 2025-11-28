@@ -195,29 +195,43 @@ class SpotifyClient:
         page = 1
         
         while url:
-            print(f"[DEBUG] Fetching playlist page {page}...")
+            print(f"[DEBUG] Fetching playlist page {page} from: {url}")
             
             try:
                 response = requests.get(
                     url,
                     headers={"Authorization": f"Bearer {self.access_token}"},
-                    params=params,
+                    params=params if page == 1 else None,
                     timeout=10
                 )
+                
+                print(f"[DEBUG] Response status: {response.status_code}")
+                
                 response.raise_for_status()
                 data = response.json()
                 
+                print(f"[DEBUG] Response keys: {list(data.keys())}")
+                
                 items = data.get("items", [])
+                print(f"[DEBUG] Items in response: {len(items)}")
+                
+                if items:
+                    print(f"[DEBUG] First playlist: {items[0].get('name', 'NO NAME')}")
+                
                 playlists.extend(items)
                 print(f"[DEBUG] Page {page}: Retrieved {len(items)} playlists")
                 
                 # Check for next page
                 url = data.get("next")
-                params = {}  # Next URL already has params
                 page += 1
+                
+                if not items:
+                    break
                 
             except Exception as e:
                 print(f"[ERROR] Failed to fetch playlists: {e}")
+                import traceback
+                traceback.print_exc()
                 break
         
         print(f"[DEBUG] Total playlists retrieved: {len(playlists)}")
