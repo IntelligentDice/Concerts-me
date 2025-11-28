@@ -2,12 +2,14 @@
 from setlistfm_api import SetlistFM
 from fuzzywuzzy import fuzz
 from utils.logging_utils import log, warn
-from spotify_api import search_track  # per-song lookups
+from spotify_api import search_track
 from typing import List
 
 
+# -------------------------------------------------------
+# Helper functions outside the class
+# -------------------------------------------------------
 def _spotify_top_tracks_fallback(artist_name: str, limit: int = 5):
-    # search for popular tracks for the artist and return URIs
     q = f"artist:{artist_name}"
     results = search_track(q, limit=40)
     if not results:
@@ -18,7 +20,6 @@ def _spotify_top_tracks_fallback(artist_name: str, limit: int = 5):
 
 
 def _best_spotify_match_for_song(song_title: str, artist_hint: str):
-    # use search_track and fuzzy matching
     try:
         q = f"{song_title} {artist_hint}"
         results = search_track(q, limit=12)
@@ -27,14 +28,19 @@ def _best_spotify_match_for_song(song_title: str, artist_hint: str):
 
     best_uri = None
     best_score = -1
+
     for item in results:
         uri = item.get("uri")
         name = item.get("name", "")
         artists = ", ".join(a["name"] for a in item.get("artists", []))
-        score = (fuzz.token_set_ratio(song_title, name) + fuzz.token_set_ratio(artist_hint or "", artists)) / 2
+        score = (
+            fuzz.token_set_ratio(song_title, name)
+            + fuzz.token_set_ratio(artist_hint or "", artists)
+        ) / 2
+
         if score > best_score:
-            best_score = score
             best_uri = uri
+            best_score = score
 
     if not best_uri:
         results = search_track(song_title, limit=8)
@@ -42,16 +48,25 @@ def _best_spotify_match_for_song(song_title: str, artist_hint: str):
             uri = item.get("uri")
             name = item.get("name", "")
             artists = ", ".join(a["name"] for a in item.get("artists", []))
-            score = (fuzz.token_set_ratio(song_title, name) + fuzz.token_set_ratio(artist_hint or "", artists)) / 2
+            score = (
+                fuzz.token_set_ratio(song_title, name)
+                + fuzz.token_set_ratio(artist_hint or "", artists)
+            ) / 2
+
             if score > best_score:
-                best_score = score
                 best_uri = uri
+                best_score = score
 
     return best_uri, best_score
 
 
+# -------------------------------------------------------
+# PlaylistBuilder Class
+# -------------------------------------------------------
 class PlaylistBuilder:
-    def __init__(self, spotify_client, sheets_client, setlist_api_key: str, debug: bool = False, dry_run: bool = False):
+    def __init__(self, spotify_client, sheets_client, setlist_api_key: str,
+                 debug: bool = False, dry_run: bool = False):
+
         self.spotify = spotify_client
         self.sheets = sheets_client
         self.setlist = SetlistFM(setlist_api_key, verbose=debug)
@@ -64,9 +79,13 @@ class PlaylistBuilder:
         else:
             log(*a)
 
+    # ----------------------------------------------
+    # Build playlist wrapper
+    # ----------------------------------------------
     def _build_playlist_for_event(self, user_id: str, playlist_name: str,
-                                  track_uris: List[str], description: str = "Auto-generated concert playlist"):
-        # Dry-run reports, no Spotify changes
+                                  track_uris: List[str],
+                                  description: str = "Auto-generated concert playlist"):
+
         if self.dry_run:
             log(f"[DRY-RUN] Would create playlist '{playlist_name}' with {len(track_uris)} tracks")
             for u in track_uris:
@@ -85,130 +104,97 @@ class PlaylistBuilder:
         if not pid:
             raise RuntimeError("Failed to create playlist")
 
-        # spotify_client historically has add_tracks or add_tracks_to_playlist depending on version.
         if hasattr(self.spotify, "add_tracks"):
             ok = self.spotify.add_tracks(pid, track_uris)
         elif hasattr(self.spotify, "add_tracks_to_playlist"):
             ok = self.spotify.add_tracks_to_playlist(pid, track_uris)
         else:
-            # last resort: ask spotify client to expose raw api or raise
-            raise RuntimeError("Spotify client does not implement add_tracks or add_tracks_to_playlist")
+            raise RuntimeError("Spotify client missing track add method")
 
         if not ok:
             warn("Failed to add tracks to playlist")
 
         return pid
 
-    # helper: parse HH:MM or HH:MM:ss into tuple sortable key
+    # HH:MM:ss → tuple for sorting
     @staticmethod
     def _parse_time_or_none(t):
         if not t:
             return None
         try:
-            parts = t.split(":")
-            parts = [int(p) for p in parts]
+            parts = [int(p) for p in t.split(":")]
             while len(parts) < 3:
                 parts.append(0)
             return tuple(parts[:3])
         except Exception:
             return None
 
+    # ----------------------------------------------
+    # Main execution
+    # ----------------------------------------------
     def run(self):
         events = self.sheets.read_events()
+
         for idx, ev in enumerate(events):
             artist = ev.get("artist")
             date = ev.get("date")
             venue = ev.get("venue")
             city = ev.get("city")
-            event_name = ev.get("event_name") or ev.get("eventName") or ev.get("event")  # festival day label
+            event_name = ev.get("event_name") or ev.get("eventName") or ev.get("event")
 
             if not artist or not date:
                 warn(f"Skipping row {idx}: missing artist/date")
                 continue
 
             self._log(f"[INFO] Looking up setlist for {artist} on {date} @ {venue}, {city}")
-            event_data = self.setlist.find_event_setlist(artist=artist, venue=venue, city=city, date=date)
+            event_data = self.setlist.find_event_setlist(
+                artist=artist,
+                venue=venue,
+                city=city,
+                date=date
+            )
+
             if not event_data:
                 warn(f"[WARN] No matching setlist found for {artist} on {date} @ {venue}, {city}")
                 continue
 
-            # ---------------------------------------------------------
-            # FESTIVAL MODE
-            # ---------------------------------------------------------
-            is_festival = str(ev.get("is_festival", "")).strip().lower() in ("true", "yes", "1")
+            # =========================================================
+            # 🟪 FESTIVAL MODE — new unified logic
+            # =========================================================
+            if event_data.get("is_festival"):
+                festival_name = event_data.get("festival_name") or artist
+                festival_day_name = event_name or festival_name
+                lineup = event_data.get("lineup") or []
 
-            if is_festival:
-                self._log(f"[INFO] Festival detected: {event_name} on {date}")
+                self._log(f"[INFO] Festival mode: {festival_day_name} with {len(lineup)} artists")
 
-                festival_day_name = ev.get("event_name") or f"{artist} Festival Day"
-
-                # 1) Fetch ALL setlists for the venue + date
-                self._log(f"[INFO] Searching festival setlists for venue={venue}, city={city}, date={date}")
-                festival_sets = self.setlist.search_setlists_festival_mode(
-                    venue=venue,
-                    city=city,
-                    date=date
-                )
-
-                if not festival_sets:
-                    warn(f"[WARN] No festival sets found for {festival_day_name} on {date}")
-
-                # 2) Parse each band into entries
-                band_entries = []   # Each entry → { name, songs[], startTime, lastUpdated }
-
-                for entry in festival_sets:
-                    band_name = entry.get("artist", {}).get("name") or None
-                    if not band_name:
-                        continue
-
-                    songs = entry.get("songs", []) or []
-                    start_time = entry.get("startTime")
-                    last_updated = entry.get("lastUpdated")
-
-                    band_entries.append({
-                        "name": band_name,
-                        "songs": songs,
-                        "startTime": start_time,
-                        "lastUpdated": last_updated,
-                    })
-
-                # 3) Sort bands by time → lastUpdated → name
-                def _parse_time_or_none(t):
-                    if not t:
-                        return None
-                    try:
-                        return tuple(map(int, t.split(":")))
-                    except:
-                        return None
-
-                def _sort_band(e):
-                    st = _parse_time_or_none(e.get("startTime"))
-                    lu = e.get("lastUpdated")
-                    nm = (e.get("name") or "").lower()
-
+                # Sort lineup by startTime → lastUpdated → name
+                def _sort_band(entry):
+                    st = self._parse_time_or_none(entry.get("startTime"))
+                    lu = entry.get("lastUpdated") or "9999-99-99T99:99:99Z"
+                    nm = (entry.get("name") or "").lower()
                     st_key = st if st else (99, 99, 99)
-                    lu_key = lu if lu else "9999-99-99T99:99:99Z"
-                    return (st_key, lu_key, nm)
+                    return (st_key, lu, nm)
 
-                band_entries = sorted(band_entries, key=_sort_band)
+                lineup = sorted(lineup, key=_sort_band)
 
-                # 4) Build ordered (title, artist) pairs with fallback
+                # Build ordered track pairs
                 pairs = []
-                for b in band_entries:
+                for b in lineup:
                     name = b["name"]
-                    songs = b["songs"]
+                    songs = b.get("songs", []) or []
 
                     if songs:
                         self._log(f"[INFO] Festival act {name} has {len(songs)} songs")
                         for s in songs:
                             pairs.append((s, name))
                     else:
-                        self._log(f"[INFO] Festival act {name} missing setlist → using top 5 tracks")
+                        self._log(f"[INFO] Festival act {name} missing songs → fallback")
                         uris = _spotify_top_tracks_fallback(name, limit=5)
                         for u in uris:
                             pairs.append((u, None))
 
-                # 5) Convert all entries into URIs
+                # Resolve all to URIs
                 track_uris = []
                 seen = set()
 
@@ -223,15 +209,15 @@ class PlaylistBuilder:
                     if uri and uri not in seen:
                         track_uris.append(uri)
                         seen.add(uri)
-                        self._log(f"[DEBUG] Matched '{title_or_uri}' -> {uri} (score={score})")
+                        self._log(f"[DEBUG] '{title_or_uri}' → {uri} (score={score})")
                     else:
-                        self._log(f"[WARN] Could not match '{title_or_uri}' ({artist_hint})")
+                        self._log(f"[WARN] No match for '{title_or_uri}' ({artist_hint})")
 
                 if not track_uris:
                     warn(f"[WARN] No tracks resolved for festival day {festival_day_name}")
                     continue
 
-                # 6) Build playlist name + description
+                # Build playlist name + short description
                 playlist_name = f"{festival_day_name} - {date}"
 
                 venue_str = venue or "Unknown venue"
@@ -251,7 +237,7 @@ class PlaylistBuilder:
                     user_id,
                     playlist_name,
                     track_uris,
-                    description=description
+                    description
                 )
 
                 if self.dry_run:
@@ -259,58 +245,49 @@ class PlaylistBuilder:
                 else:
                     log(f"Playlist created: {playlist_name} (id={pid})")
 
-                # IMPORTANT: prevent non-festival logic from running after this
                 continue
-            # ---------------------------------------------------------
+            # =========================================================
             # END FESTIVAL MODE
+            # =========================================================
+
             # ---------------------------------------------------------
-
-
-            # ----------------------------------------------
             # NORMAL EVENT MODE
-            # ----------------------------------------------
+            # ---------------------------------------------------------
             headliner = event_data.get("headliner")
             headliner_songs = event_data.get("headliner_songs", []) or []
             openers = event_data.get("openers", []) or []
 
-            # --- Sort openers before building pairs ---
-            def _sort_key_for_opener(op):
+            # Opener sorting
+            def _sort_opener(op):
                 st = self._parse_time_or_none(op.get("startTime"))
-                lu = op.get("lastUpdated")
+                lu = op.get("lastUpdated") or "9999-99-99T99:99:99Z"
                 nm = (op.get("name") or "").lower()
-                st_key = st if st else (99, 99, 99)
-                lu_key = lu if lu else "9999-99-99T99:99:99Z"
-                return (st_key, lu_key, nm)
+                return (st if st else (99, 99, 99), lu, nm)
 
-            openers = sorted(openers, key=_sort_key_for_opener)
+            openers = sorted(openers, key=_sort_opener)
 
-            # Build ordered pairs: openers first, then headliner
+            # Build song pairs: openers first, then headliner
             pairs = []
             for op in openers:
-                name = op.get("name")
+                oname = op["name"]
                 songs = op.get("songs", []) or []
+
                 if songs:
-                    self._log(f"[INFO] Opener {name} has {len(songs)} songs")
                     for s in songs:
-                        pairs.append((s, name))
+                        pairs.append((s, oname))
                 else:
-                    self._log(f"[INFO] Opener {name} has no songs in setlist; using spotify fallback")
-                    uris = _spotify_top_tracks_fallback(name, limit=5)
+                    uris = _spotify_top_tracks_fallback(oname, limit=5)
                     for u in uris:
-                        pairs.append((u, None))  # URI pass-through
+                        pairs.append((u, None))
 
             # Add headliner songs
-            if headliner_songs:
-                self._log(f"[INFO] Headliner {headliner} songs count: {len(headliner_songs)}")
-                for s in headliner_songs:
-                    pairs.append((s, headliner))
-            else:
-                warn(f"[WARN] No headliner songs found for {headliner} — skipping")
-                continue
+            for s in headliner_songs:
+                pairs.append((s, headliner))
 
-            # Resolve to URIs
+            # Resolve URIs
             track_uris = []
             seen = set()
+
             for title_or_uri, artist_hint in pairs:
                 if artist_hint is None and isinstance(title_or_uri, str) and title_or_uri.startswith("spotify:"):
                     if title_or_uri not in seen:
@@ -322,7 +299,6 @@ class PlaylistBuilder:
                 if uri and uri not in seen:
                     track_uris.append(uri)
                     seen.add(uri)
-                    self._log(f"[DEBUG] Matched '{title_or_uri}' -> {uri} (score={score})")
                 else:
                     self._log(f"[WARN] Could not match '{title_or_uri}' ({artist_hint})")
 
@@ -330,34 +306,33 @@ class PlaylistBuilder:
                 warn(f"No tracks resolved for {artist} on {date}")
                 continue
 
-            # Build smart playlist description (short)
-            date_str = date
+            # Build description
             venue_str = venue or "Unknown venue"
             city_str = city or "Unknown city"
 
             if openers:
                 if len(openers) == 1:
-                    opener_part = f"with opener {openers[0]['name']}"
+                    opener_text = f"with opener {openers[0]['name']}"
                 else:
-                    opener_names = ", ".join(op['name'] for op in openers)
-                    opener_part = f"with openers {opener_names}"
+                    names = ", ".join(op["name"] for op in openers)
+                    opener_text = f"with openers {names}"
             else:
-                opener_part = ""
+                opener_text = ""
 
-            if opener_part:
+            if opener_text:
                 description = (
-                    f"Live setlist from {headliner} {opener_part} — recorded at "
-                    f"{venue_str}, {city_str} on {date_str}."
+                    f"Live setlist from {headliner} {opener_text} — recorded at "
+                    f"{venue_str}, {city_str} on {date}."
                 )
             else:
                 description = (
                     f"Live setlist from {headliner} — recorded at "
-                    f"{venue_str}, {city_str} on {date_str}."
+                    f"{venue_str}, {city_str} on {date}."
                 )
 
             playlist_name = f"{artist} - {date}"
 
-            # Prevent duplicate playlists
+            # Prevent duplicates
             existing = None
             try:
                 if hasattr(self.spotify, "find_playlist_by_name"):
@@ -367,9 +342,9 @@ class PlaylistBuilder:
 
             if existing:
                 if self.dry_run:
-                    log(f"[DRY-RUN] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
+                    log(f"[DRY-RUN] Playlist already exists: {playlist_name} (id={existing}) — skipping")
                 else:
-                    log(f"[INFO] Playlist already exists: {playlist_name} (id={existing}) — skipping creation")
+                    log(f"[INFO] Playlist already exists: {playlist_name} (id={existing}) — skipping")
                 continue
 
             try:
@@ -377,7 +352,13 @@ class PlaylistBuilder:
             except Exception:
                 user_id = "me"
 
-            pid = self._build_playlist_for_event(user_id, playlist_name, track_uris, description=description)
+            pid = self._build_playlist_for_event(
+                user_id,
+                playlist_name,
+                track_uris,
+                description
+            )
+
             if self.dry_run:
                 log(f"[DRY-RUN] Playlist NOT created: {playlist_name}")
             else:
