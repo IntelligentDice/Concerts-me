@@ -128,21 +128,32 @@ def process_events(events, dry_run=False):
             description = f"{event['date']} - {event.get('venue', '')} - {event.get('city', '')}"
         
         # Create or update playlist
-        existing_id = spotify.find_playlist_by_name(playlist_name)
+        playlist_name_trimmed = playlist_name[:100] if len(playlist_name) > 100 else playlist_name
+        existing_id = spotify.find_playlist_by_name(playlist_name_trimmed)
         
-        if existing_id and not dry_run:
-            print(f"[INFO] Updating existing playlist: {playlist_name}")
-            spotify.update_playlist(existing_id, track_uris)
+        if existing_id:
+            print(f"[INFO] Playlist '{playlist_name_trimmed}' already exists (ID: {existing_id})")
+            
+            if dry_run:
+                print(f"[DRY RUN] Would update existing playlist with {len(track_uris)} tracks")
+            else:
+                print(f"[INFO] Updating existing playlist with {len(track_uris)} tracks")
+                spotify.update_playlist(existing_id, track_uris)
+            
             stats["playlists_updated"] += 1
         else:
-            print(f"[INFO] Creating new playlist: {playlist_name}")
-            playlist_id = spotify.create_or_update_playlist(playlist_name, description, track_uris)
+            print(f"[INFO] Creating new playlist: {playlist_name_trimmed}")
             
-            if playlist_id:
-                if dry_run:
+            if dry_run:
+                print(f"[DRY RUN] Would create playlist with {len(track_uris)} tracks")
+                stats["playlists_created"] += 1
+            else:
+                playlist_id = spotify.create_playlist(playlist_name_trimmed, description, track_uris)
+                
+                if playlist_id:
                     stats["playlists_created"] += 1
                 else:
-                    stats["playlists_created"] += 1
+                    print(f"[ERROR] Failed to create playlist for {event['artist']}")
     
     # Print summary report
     print("\n" + "="*60)
