@@ -1,20 +1,6 @@
-# Google APIs
-google-api-python-client
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-
-# Spotify API
-spotipy
-
-# Sheets & Drive integrations
-gspread
-
-# HTTP & Utility
-requests
-python-dotenv
-
-# Fuzzy matching
-fuzzywuzzy
-python-Levenshtein
-
+requests>=2.31.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+google-api-python-client>=2.100.0
+rapidfuzz>=3.5.0
