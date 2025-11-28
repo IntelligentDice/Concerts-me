@@ -185,18 +185,39 @@ def parse_setlist(setlist, is_festival, event):
             result["openers"] = all_artists[:-1] if len(all_artists) > 1 else []
         
     else:
-        # Normal concert mode
+        # Normal concert mode - check for openers and main artist
         main_artist = setlist.get("artist", {}).get("name", event.get("artist", "Unknown"))
-        all_songs = []
+        main_songs = []
+        openers = []
         
+        # Setlist.fm typically structures multi-artist shows with multiple sets
+        # or uses set names/encore to distinguish
         for set_data in sets:
+            set_name = set_data.get("name", "")
+            is_encore = set_data.get("encore", 0)
             songs = set_data.get("song", [])
             song_names = [song.get("name", "") for song in songs if song.get("name")]
-            all_songs.extend(song_names)
+            
+            # If set name indicates a different artist (not encore, not empty)
+            # treat it as an opener
+            if set_name and set_name.lower() not in ["", "setlist", "encore", "main set"] and not is_encore:
+                # Check if set name is different from main artist
+                if fuzzy_match_score(set_name, main_artist) < 80:
+                    openers.append({
+                        "name": set_name,
+                        "songs": song_names
+                    })
+                    print(f"[DEBUG] Found opener: {set_name} with {len(song_names)} songs")
+                else:
+                    main_songs.extend(song_names)
+            else:
+                # Main artist songs
+                main_songs.extend(song_names)
         
         result["headliner"] = {
             "name": main_artist,
-            "songs": all_songs
+            "songs": main_songs
         }
+        result["openers"] = openers
     
     return result
