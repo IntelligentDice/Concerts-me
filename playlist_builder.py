@@ -127,8 +127,14 @@ def process_events(events, dry_run=False):
             playlist_name = f"{event['artist']} - {event['date']}"
             description = f"{event['date']} - {event.get('venue', '')} - {event.get('city', '')}"
         
+        print(f"[DEBUG] Generated playlist name: '{playlist_name}' (length: {len(playlist_name)})")
+        
         # Create or update playlist
         playlist_name_trimmed = playlist_name[:100] if len(playlist_name) > 100 else playlist_name
+        
+        if playlist_name_trimmed != playlist_name:
+            print(f"[DEBUG] Trimmed playlist name to: '{playlist_name_trimmed}'")
+        
         existing_id = spotify.find_playlist_by_name(playlist_name_trimmed)
         
         if existing_id:
