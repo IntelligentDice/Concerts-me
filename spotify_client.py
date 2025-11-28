@@ -236,26 +236,54 @@ class SpotifyClient:
             return None
         
         # Create playlist
-        data = {
+        payload = {
             "name": name,
             "description": description,
             "public": False
         }
         
-        result = self._make_request("POST", f"/users/{user_id}/playlists", json=data)
-        
-        if not result:
-            print(f"[ERROR] Failed to create playlist: {name}")
+        try:
+            response = requests.post(
+                f"https://api.spotify.com/v1/users/{user_id}/playlists",
+                headers={
+                    "Authorization": f"Bearer {self.access_token}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=10
+            )
+            
+            # Handle token expiration
+            if response.status_code == 401:
+                print("[DEBUG] Token expired, refreshing...")
+                self._refresh_access_token()
+                response = requests.post(
+                    f"https://api.spotify.com/v1/users/{user_id}/playlists",
+                    headers={
+                        "Authorization": f"Bearer {self.access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                    timeout=10
+                )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            playlist_id = result["id"]
+            print(f"[INFO] Created playlist: {name} (ID: {playlist_id})")
+            
+            # Add tracks if provided
+            if track_uris:
+                self.add_tracks_to_playlist(playlist_id, track_uris)
+            
+            return playlist_id
+            
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to create playlist: {e}")
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[ERROR] Response: {e.response.text}")
             return None
-        
-        playlist_id = result["id"]
-        print(f"[INFO] Created playlist: {name} (ID: {playlist_id})")
-        
-        # Add tracks if provided
-        if track_uris:
-            self.add_tracks_to_playlist(playlist_id, track_uris)
-        
-        return playlist_id
     
     def update_playlist(self, playlist_id, track_uris):
         """
