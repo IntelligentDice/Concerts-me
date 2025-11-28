@@ -55,7 +55,8 @@ class PlaylistBuilder:
         self.setlist = SetlistFM(setlist_api_key, verbose=debug)
         self.debug = debug
         self.dry_run = dry_run
-
+        self._song_cache = {}
+    
     def _log(self, *a):
         if self.debug:
             print(*a)
@@ -106,6 +107,25 @@ class PlaylistBuilder:
             return tuple(parts[:3])
         except Exception:
             return None
+
+    def _cached_best_match(self, title: str, artist_hint: str):
+    key = (title.lower().strip(), (artist_hint or "").lower().strip())
+
+    # Cache hit
+    if key in self._song_cache:
+        cached = self._song_cache[key]
+        if self.debug:
+            self._log(f"[CACHE] Hit for '{title}' ({artist_hint}) -> {cached}")
+        return cached, 100  # fake score, we trust cache
+
+    # Cache miss → do real Spotify lookup
+    uri, score = _best_spotify_match_for_song(title, artist_hint)
+
+    # store only positive matches
+    if uri:
+        self._song_cache[key] = uri
+
+    return uri, score
 
     def run(self):
         events = self.sheets.read_events()
@@ -185,7 +205,7 @@ class PlaylistBuilder:
                             track_uris.append(title_or_uri)
                             seen.add(title_or_uri)
                         continue
-                    uri, score = _best_spotify_match_for_song(title_or_uri, artist_hint or "")
+                    uri, score = self._cached_best_match(title_or_uri, artist_hint or "")
                     if uri and uri not in seen:
                         track_uris.append(uri)
                         seen.add(uri)
@@ -273,7 +293,7 @@ class PlaylistBuilder:
                         track_uris.append(title_or_uri)
                         seen.add(title_or_uri)
                     continue
-                uri, score = _best_spotify_match_for_song(title_or_uri, artist_hint or headliner)
+                uri, score = self._cached_best_match(title_or_uri, artist_hint or headliner)
                 if uri and uri not in seen:
                     track_uris.append(uri)
                     seen.add(uri)
