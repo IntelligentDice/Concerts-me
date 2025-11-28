@@ -109,27 +109,13 @@ def process_events(events, dry_run=False):
             # Festival mode
             festival_name = setlist_data.get("festival_name", event["artist"])
             playlist_name = f"{festival_name} - {event['date']}"
-            
-            lineup_str = ", ".join(artists_in_order) if artists_in_order else "Various Artists"
-            description = f"Festival: {festival_name}\n"
-            description += f"Date: {event['date']}\n"
-            description += f"Location: {event.get('city', 'Unknown')}\n"
-            description += f"Lineup: {lineup_str}"
+            description = f"{event['date']} - {event.get('city', '')}"
             
             stats["festivals_processed"] += 1
         else:
             # Normal concert mode
             playlist_name = f"{event['artist']} - {event['date']}"
-            
-            description = f"Artist: {event['artist']}\n"
-            description += f"Date: {event['date']}\n"
-            if event.get("venue"):
-                description += f"Venue: {event['venue']}\n"
-            if event.get("city"):
-                description += f"City: {event['city']}\n"
-            
-            if artists_in_order and len(artists_in_order) > 1:
-                description += f"Lineup: {', '.join(artists_in_order)}"
+            description = f"{event['date']} - {event.get('venue', '')} - {event.get('city', '')}"
         
         # Create or update playlist
         existing_id = spotify.find_playlist_by_name(playlist_name)
