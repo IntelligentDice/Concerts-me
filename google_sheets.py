@@ -1,90 +1,106 @@
+"""
+Google Sheets integration module.
+Fetches event data from a Google Sheet using the Sheets API.
+"""
+
+import os
 import json
-import logging
-import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 
-class GoogleSheets:
+def fetch_events_from_sheet():
     """
-    Google Sheets wrapper that loads events from a sheet with the format:
-
-        artist | event_name | venue | city | date
-
-    It also handles optional columns safely.
+    Fetch events from Google Sheets.
+    
+    Returns:
+        list: List of event dictionaries with keys:
+              artist, event_name, venue, city, date, is_festival
     """
-
-    REQUIRED_COLUMNS = ["artist", "event_name", "venue", "city", "date"]
-
-    def __init__(self, sheet_id: str, service_account_json: str):
-        if not sheet_id:
-            raise ValueError("sheet_id is required")
-
-        try:
-            creds_info = json.loads(service_account_json)
-        except Exception as e:
-            raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON contains invalid JSON") from e
-
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-
-        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-        client = gspread.authorize(creds)
-
-        self.sheet = client.open_by_key(sheet_id).sheet1
-
-    # ------------------------------------------------------------------
-    # Read events from the sheet (FULL DATA)
-    # ------------------------------------------------------------------
-    def read_events(self):
-        """
-        Reads rows from the sheet and returns a list of event dictionaries:
-
-        {
-            "artist": "Blind Guardian",
-            "event_name": "...",
-            "venue": "The Underground",
-            "city": "Charlotte",
-            "date": "2025-11-22"
-        }
-        """
-
-        rows = self.sheet.get_all_records()
+    try:
+        # Load credentials from environment variable
+        credentials_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
+        sheet_id = os.getenv("GOOGLE_SHEET_ID")
+        
+        if not credentials_json or not sheet_id:
+            raise ValueError("Missing Google Sheets credentials or sheet ID")
+        
+        # Parse credentials JSON
+        credentials_dict = json.loads(credentials_json)
+        
+        # Create credentials object
+        credentials = Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+        )
+        
+        # Build the Sheets API service
+        service = build('sheets', 'v4', credentials=credentials)
+        
+        # Fetch data from the sheet (assuming data is in Sheet1, starting from A1)
+        sheet_range = "Sheet1!A:F"
+        result = service.spreadsheets().values().get(
+            spreadsheetId=sheet_id,
+            range=sheet_range
+        ).execute()
+        
+        values = result.get('values', [])
+        
+        if not values:
+            print("[WARN] No data found in Google Sheet")
+            return []
+        
+        # Assume first row is headers
+        headers = values[0]
+        rows = values[1:]
+        
+        # Map headers to lowercase for flexible matching
+        header_map = {h.lower().strip(): i for i, h in enumerate(headers)}
+        
         events = []
-
-        for row in rows:
-            # Normalize keys (Google Sheets sometimes changes capitalization)
-            normalized = {k.strip().lower(): v for k, v in row.items()}
-
-            event = {
-                "artist": normalized.get("artist"),
-                "event_name": normalized.get("event_name"),
-                "venue": normalized.get("venue"),
-                "city": normalized.get("city"),
-                "date": normalized.get("date"),
-            }
-
-            # Validate required fields
-            if not event["artist"] or not event["date"]:
-                logging.warning(f"Skipping row due to missing required fields: {row}")
+        for row_num, row in enumerate(rows, start=2):
+            # Skip empty rows
+            if not row or all(not cell.strip() for cell in row):
                 continue
-
-            events.append(event)
-
-        logging.info(f"[INFO] Loaded {len(events)} events from Google Sheets")
+            
+            # Pad row to match header length
+            row = row + [''] * (len(headers) - len(row))
+            
+            try:
+                # Extract required fields
+                artist = row[header_map.get('artist', 0)].strip()
+                event_name = row[header_map.get('event_name', 1)].strip()
+                venue = row[header_map.get('venue', 2)].strip()
+                city = row[header_map.get('city', 3)].strip()
+                date = row[header_map.get('date', 4)].strip()
+                is_festival_str = row[header_map.get('is_festival', 5)].strip().upper()
+                
+                # Validate required fields
+                if not artist or not date:
+                    print(f"[WARN] Row {row_num}: Missing required fields (artist or date), skipping")
+                    continue
+                
+                # Convert is_festival to boolean
+                is_festival = is_festival_str == "TRUE"
+                
+                event = {
+                    "artist": artist,
+                    "event_name": event_name,
+                    "venue": venue,
+                    "city": city,
+                    "date": date,
+                    "is_festival": is_festival
+                }
+                
+                events.append(event)
+                print(f"[DEBUG] Loaded event: {artist} on {date} (festival: {is_festival})")
+                
+            except Exception as e:
+                print(f"[WARN] Row {row_num}: Error parsing row - {e}")
+                continue
+        
         return events
-
-    # ------------------------------------------------------------------
-    # Write playlist URL
-    # ------------------------------------------------------------------
-    def write_playlist_link(self, event_index: int, playlist_url: str):
-        header = self.sheet.row_values(1)
-
-        try:
-            col = header.index("playlist") + 1
-        except ValueError:
-            col = len(header) + 1
-            self.sheet.update_cell(1, col, "playlist")
-
-        self.sheet.update_cell(event_index + 2, col, playlist_url)
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch events from Google Sheets: {e}")
+        raise
