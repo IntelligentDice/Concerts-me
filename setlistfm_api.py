@@ -1,309 +1,345 @@
 # setlistfm_api.py
-"""
-Clean, production-ready SetlistFM wrapper with:
-  • Normal event lookup
-  • Festival mode detection
-  • Ordered lineup extraction
-  • Headliners + openers parsing
-  • Protective parsing for inconsistent Setlist.fm data
-  • Verbose & debug-friendly logging
-"""
-
 import requests
-import logging
+from rapidfuzz import fuzz
 from datetime import datetime
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
+
+BASE_URL = "https://api.setlist.fm/rest/1.0"
 
 
-LOG = logging.getLogger("setlistfm")
+def _norm_text(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    return "".join(ch for ch in s.lower().strip() if ch.isalnum() or ch.isspace()).strip()
 
 
 class SetlistFM:
-    BASE_URL = "https://api.setlist.fm/rest/1.0"
+    """
+    Setlist.fm client with:
+    - Festival mode support
+    - Normal event extraction
+    - Fuzzy headliner matching
+    """
 
     def __init__(self, api_key: str, verbose: bool = False):
         self.api_key = api_key
+        self.headers = {"x-api-key": api_key, "Accept": "application/json"}
         self.verbose = verbose
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Accept": "application/json",
-            "x-api-key": api_key,
-            "User-Agent": "ConcertPlaylistBuilder/1.0"
-        })
 
-    # ----------------------------------------------------------------------
-    # UTILITIES
-    # ----------------------------------------------------------------------
-    def _log(self, msg: str):
+    def _log(self, *a):
         if self.verbose:
-            print(msg)
-        else:
-            LOG.info(msg)
+            print(*a)
 
-    def _warn(self, msg: str):
-        if self.verbose:
-            print("[WARN]", msg)
-        else:
-            LOG.warning(msg)
+    def _to_setlistfm_date(self, iso_date: str) -> str:
+        # input YYYY-MM-DD -> DD-MM-YYYY
+        dt = datetime.fromisoformat(iso_date)
+        return dt.strftime("%d-%m-%Y")
 
-    def _api_get(self, endpoint: str, params: Dict[str, str] = None) -> Optional[dict]:
-        """GET with graceful fallback."""
-        url = f"{self.BASE_URL}/{endpoint.lstrip('/')}"
-        try:
-            resp = self.session.get(url, params=params, timeout=12)
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                self._warn(f"SetlistFM GET {url} failed ({resp.status_code}) {resp.text[:120]}")
-        except Exception as e:
-            self._warn(f"SetlistFM GET error: {e}")
-        return None
+    # ---------------------------------------------------------
+    # SONG EXTRACTION
+    # ---------------------------------------------------------
+    def _extract_songs(self, entry: dict) -> List[str]:
+        songs: List[str] = []
+        sets = entry.get("sets", {}).get("set", [])
 
-    def _convert_date_to_api_format(self, date_str: str) -> str:
+        if not isinstance(sets, list):
+            sets = [sets] if sets else []
+
+        for block in sets:
+            raw = block.get("song", []) or []
+
+            if not isinstance(raw, list):
+                raw = [raw]
+
+            for s in raw:
+                if isinstance(s, dict):
+                    name = s.get("name")
+                    if name:
+                        songs.append(name)
+                elif isinstance(s, str):
+                    songs.append(s)
+
+        return songs
+
+    # ---------------------------------------------------------
+    # CRITICAL: FIXED NORMALIZATION OF ARTIST ENTRIES
+    # ---------------------------------------------------------
+    def _gather_basic_entry(self, entry: dict) -> Dict:
         """
-        Accepts YYYY-MM-DD and returns DD-MM-YYYY (API format).
-        If already in DD-MM-YYYY, returns unchanged.
-        """
-        try:
-            if "-" not in date_str:
-                return date_str
-
-            parts = date_str.split("-")
-            if len(parts[0]) == 4:
-                # YYYY-MM-DD -> DD-MM-YYYY
-                yyyy, mm, dd = parts
-                return f"{dd}-{mm}-{yyyy}"
-            else:
-                return date_str
-        except Exception:
-            return date_str
-
-    # ----------------------------------------------------------------------
-    # HIGH-LEVEL PUBLIC METHOD
-    # ----------------------------------------------------------------------
-    def find_event_setlist(self, artist: str, venue: Optional[str], city: Optional[str], date: str) -> Optional[dict]:
-        """
-        MAIN ENTRYPOINT.
-
-        Returns:
-        {
-            "is_festival": bool,
-            "festival_name": str,
-            "lineup": [ { name, songs, startTime, lastUpdated } ],
-            "venue": str,
-            "city": str,
-            "headliner": str,
-            "headliner_songs": [],
-            "openers": []
-        }
+        Normalize a setlist entry into a simple dict:
+        { name, songs, startTime, stage, lastUpdated }
         """
 
-        api_date = self._convert_date_to_api_format(date)
-        self._log(f"[INFO] Searching setlists for {artist} {date} @ {venue} {city}")
+        # --- FIX: always extract artist name as string ---
+        artist_block = entry.get("artist") or {}
+        name = artist_block.get("name") or ""
+        if not isinstance(name, str):
+            name = ""
+        name = name.strip()
 
-        params = {
-            "artistName": artist,
-            "date": api_date
-        }
+        songs = self._extract_songs(entry)
 
-        raw = self._api_get("search/setlists", params=params)
-        if not raw or "setlist" not in raw:
-            self._warn(f"No setlist results for {artist} on {date}")
-            return None
+        # Extract start time
+        start_time = None
+        sets = entry.get("sets", {}).get("set", [])
+        if isinstance(sets, list):
+            for s in sets:
+                st = s.get("startTime") or s.get("start")
+                if st:
+                    start_time = st
+                    break
 
-        sets = raw.get("setlist", [])
-        if not sets:
-            self._warn(f"No setlists returned for {artist} on {date}")
-            return None
+        if not start_time:
+            start_time = entry.get("startTime") or entry.get("start")
 
-        # Try to locate the most relevant event using venue/city hints if available.
-        event = self._select_best_event(sets, venue, city)
-        if not event:
-            self._warn("No matching event found after filtering")
-            return None
+        # Extract stage
+        stage = (
+            entry.get("stage")
+            or entry.get("venue", {}).get("stage")
+            or None
+        )
 
-        return self._extract_event_data(event)
-
-    # ----------------------------------------------------------------------
-    # EVENT SELECTION
-    # ----------------------------------------------------------------------
-    def _select_best_event(self, events: List[dict], venue: Optional[str], city: Optional[str]) -> Optional[dict]:
-        """
-        Choose best event:
-           • exact venue+city match wins
-           • fallback to city match
-           • else highest 'lastUpdated' wins
-        """
-        if venue:
-            venue_lower = venue.lower()
-        if city:
-            city_lower = city.lower()
-
-        best = None
-        best_score = -1
-
-        for ev in events:
-            v = (ev.get("venue") or {}).get("name", "") or ""
-            c = (ev.get("venue") or {}).get("city", {}).get("name", "") or ""
-            v_l = v.lower()
-            c_l = c.lower()
-
-            score = 0
-            if venue and venue_lower in v_l:
-                score += 3
-            if city and city_lower in c_l:
-                score += 2
-
-            # If used any scoring or if nothing has been chosen yet
-            if score > best_score:
-                best = ev
-                best_score = score
-
-        # If multiple matches but score ties, pick the most recently updated
-        if best:
-            last_updated = best.get("lastUpdated")
-            if last_updated:
-                best_dt = self._parse_last_updated(last_updated)
-                for ev in events:
-                    if ev is best:
-                        continue
-                    ev_lu = self._parse_last_updated(ev.get("lastUpdated"))
-                    if ev_lu > best_dt:
-                        best = ev
-                        best_dt = ev_lu
-        return best
-
-    def _parse_last_updated(self, s: Optional[str]) -> datetime:
-        if not s:
-            return datetime.min
-        try:
-            return datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
-        except Exception:
-            return datetime.min
-
-    # ----------------------------------------------------------------------
-    # EVENT EXTRACTION (festival OR normal)
-    # ----------------------------------------------------------------------
-    def _extract_event_data(self, event: dict) -> dict:
-        """Detect if festival; extract openers/headliner; return structured dict."""
-
-        venue = (event.get("venue") or {}).get("name") or ""
-        city = (event.get("venue") or {}).get("city", {}).get("name") or ""
-        festival = (event.get("eventInfo") or {}).get("festivalName")
-
-        # ---------------------------
-        # FESTIVAL DETECTED
-        # ---------------------------
-        if festival:
-            self._log(f"[INFO] FESTIVAL MODE lookup: venue='{venue}', city='{city}', date='{event.get('eventDate')}'")
-            return self._extract_festival(event, festival, venue, city)
-
-        # ---------------------------
-        # NORMAL SHOW
-        # ---------------------------
-        return self._extract_normal_show(event, venue, city)
-
-    # ----------------------------------------------------------------------
-    # FESTIVAL PARSER
-    # ----------------------------------------------------------------------
-    def _extract_festival(self, event: dict, festival_name: str, venue: str, city: str) -> dict:
-        """
-        Returns:
-        {
-            "is_festival": True,
-            "festival_name": str,
-            "lineup": [ {name, songs[], startTime, lastUpdated} ],
-            "venue": str,
-            "city": str
-        }
-        """
-        lineup = []
-
-        # Setlist.fm festival structure:
-        # event["sets"]["set"] = [
-        #   { "artist": { "name": "Band" }, "song": [..], "info": "..", ... }
-        # ]
-        sets = (event.get("sets") or {}).get("set", [])
-
-        for s in sets:
-            artist_name = (s.get("artist") or {}).get("name")
-            if not artist_name:
-                continue
-
-            songs = [x.get("name") for x in (s.get("song") or []) if x.get("name")]
-            start_time = s.get("info")  # may contain "start time: HH:MM"
-            last_updated = (s.get("lastUpdated") or event.get("lastUpdated"))
-
-            lineup.append({
-                "name": artist_name,
-                "songs": songs,
-                "startTime": start_time,
-                "lastUpdated": last_updated,
-                "_raw": s
-            })
+        last_updated = entry.get("lastUpdated") or entry.get("lastUpdatedAt")
 
         return {
-            "is_festival": True,
-            "festival_name": festival_name,
-            "lineup": lineup,
-            "venue": venue,
-            "city": city,
-            "eventDate": event.get("eventDate")
+            "name": name,
+            "songs": songs,
+            "startTime": start_time,
+            "stage": stage,
+            "lastUpdated": last_updated,
+            "_raw": entry,
         }
 
-    # ----------------------------------------------------------------------
-    # NORMAL SHOW PARSER
-    # ----------------------------------------------------------------------
-    def _extract_normal_show(self, event: dict, venue: str, city: str) -> dict:
-        """
-        For a normal show:
-        Extract headliner + openers based on Setlist.fm order.
-        """
-        sets = (event.get("sets") or {}).get("set", [])
-        if not sets:
-            self._warn("No sets found in normal show")
+    # ---------------------------------------------------------
+    # FESTIVAL-MODE DIRECT QUERY
+    # ---------------------------------------------------------
+    def search_setlists_festival_mode(self, venue: str, city: str, date: str) -> List[Dict]:
+        date_ddmm = self._to_setlistfm_date(date)
+
+        resp = requests.get(
+            f"{BASE_URL}/search/setlists",
+            headers=self.headers,
+            params={"venueName": venue, "cityName": city, "date": date_ddmm},
+            timeout=15,
+        )
+
+        if resp.status_code != 200:
+            self._log(f"[WARN] SetlistFM GET festival-mode failed ({resp.status_code}) {resp.text[:200]}")
+            return []
+
+        raw = resp.json().get("setlist", []) or []
+        results = []
+
+        for entry in raw:
+            results.append(self._gather_basic_entry(entry))
+
+        return results
+
+    # ---------------------------------------------------------
+    # MAIN ENTRYPOINT: FIND EVENT SETLIST
+    # ---------------------------------------------------------
+    def find_event_setlist(
+        self,
+        artist: str,
+        venue: Optional[str],
+        city: Optional[str],
+        date: str,
+        headliner_threshold: int = 80,
+    ) -> Optional[Dict]:
+
+        self._log(f"[INFO] Searching setlists for {artist} {date} @ {venue} {city}")
+
+        date_ddmm = self._to_setlistfm_date(date)
+
+        # ---------------------------------------------------------
+        # 1) Search by artist + date
+        # ---------------------------------------------------------
+        resp = requests.get(
+            f"{BASE_URL}/search/setlists",
+            headers=self.headers,
+            params={"artistName": artist, "date": date_ddmm},
+            timeout=15,
+        )
+
+        if resp.status_code != 200:
+            self._log(f"[WARN] SetlistFM GET failed ({resp.status_code}) ***{resp.text[:200]}")
+            return None
+
+        artist_sets = resp.json().get("setlist", []) or []
+        headliner_entry = None
+
+        for e in artist_sets:
+            if e.get("eventDate") == date_ddmm:
+                headliner_entry = e
+                break
+
+        # ---------------------------------------------------------
+        # 2) If no artist entry found → fallback to venue+city+date
+        # ---------------------------------------------------------
+        if not headliner_entry:
+            resp2 = requests.get(
+                f"{BASE_URL}/search/setlists",
+                headers=self.headers,
+                params={"venueName": venue, "cityName": city, "date": date_ddmm},
+                timeout=15,
+            )
+
+            if resp2.status_code != 200:
+                self._log(f"[WARN] SetlistFM GET failed ({resp2.status_code}) ***{resp2.text[:200]}")
+                return None
+
+            venue_sets = resp2.json().get("setlist", []) or []
+
+            # Festival condition
+            if len(venue_sets) >= 3:
+                lineup = [self._gather_basic_entry(e) for e in venue_sets]
+
+                # Dedupe
+                seen = set()
+                deduped = []
+                for b in lineup:
+                    key = b["name"].lower()
+                    if key not in seen and b["name"]:
+                        seen.add(key)
+                        deduped.append(b)
+
+                return {
+                    "is_festival": True,
+                    "festival_name": artist,
+                    "event_name": None,
+                    "venue": venue,
+                    "city": city,
+                    "date": date,
+                    "lineup": deduped,
+                }
+
+            return None
+
+        # ---------------------------------------------------------
+        # 3) Now fetch full venue+date entries (normal or festival)
+        # ---------------------------------------------------------
+        ev = headliner_entry.get("venue", {})
+        resolved_venue = ev.get("name") or venue or ""
+        resolved_city = ev.get("city", {}).get("name") or city or ""
+
+        resp3 = requests.get(
+            f"{BASE_URL}/search/setlists",
+            headers=self.headers,
+            params={
+                "venueName": resolved_venue,
+                "cityName": resolved_city,
+                "date": date_ddmm,
+            },
+            timeout=15,
+        )
+
+        if resp3.status_code != 200:
+            self._log(f"[WARN] SetlistFM GET failed ({resp3.status_code}) ***{resp3.text[:200]}")
+            return None
+
+        all_entries = resp3.json().get("setlist", []) or []
+
+        # Festival if >= 3 artists
+        if len(all_entries) >= 3:
+            lineup = [self._gather_basic_entry(e) for e in all_entries]
+
+            seen = set()
+            deduped = []
+            for b in lineup:
+                key = b["name"].lower()
+                if key not in seen and b["name"]:
+                    seen.add(key)
+                    deduped.append(b)
+
             return {
-                "is_festival": False,
-                "headliner": None,
-                "headliner_songs": [],
-                "openers": [],
-                "venue": venue,
-                "city": city,
-                "eventDate": event.get("eventDate")
+                "is_festival": True,
+                "festival_name": artist,
+                "event_name": None,
+                "venue": resolved_venue,
+                "city": resolved_city,
+                "date": date,
+                "lineup": deduped,
             }
 
-        # Heuristic:
-        #   • Last set is headliner (they appear last)
-        #   • All sets before it are openers
-        headliner_block = sets[-1]
-        openers_blocks = sets[:-1]
+        # ---------------------------------------------------------
+        # 4) NORMAL EVENT: EXTRACT OPENERS + HEADLINER
+        # ---------------------------------------------------------
+        artists_map: Dict[str, Dict] = {}
 
-        headliner_name = (headliner_block.get("artist") or {}).get("name")
-        headliner_songs = [x.get("name") for x in (headliner_block.get("song") or []) if x.get("name")]
-        headliner_start = headliner_block.get("info")
-        headliner_last_updated = headliner_block.get("lastUpdated") or event.get("lastUpdated")
+        for e in all_entries:
+            nm = (e.get("artist") or {}).get("name") or ""
+            nm = nm.strip()
+            if not nm:
+                continue
 
+            key = nm.lower()
+
+            if key not in artists_map:
+                artists_map[key] = {
+                    "name": nm,
+                    "songs": [],
+                    "startTime": None,
+                    "lastUpdated": None,
+                }
+
+            songs = self._extract_songs(e)
+            for s in songs:
+                if s not in artists_map[key]["songs"]:
+                    artists_map[key]["songs"].append(s)
+
+            sets = e.get("sets", {}).get("set", [])
+            if not isinstance(sets, list):
+                sets = [sets]
+
+            for s in sets:
+                st = s.get("startTime") or s.get("start")
+                if st and not artists_map[key]["startTime"]:
+                    artists_map[key]["startTime"] = st
+
+            lu = e.get("lastUpdated") or e.get("lastUpdatedAt")
+            if lu and not artists_map[key]["lastUpdated"]:
+                artists_map[key]["lastUpdated"] = lu
+
+        # ---------------------------------------------------------
+        # 5) FIXED — FUZZY HEADLINER MATCHING
+        # ---------------------------------------------------------
+        scored = []
+        target_norm = _norm_text(artist)
+
+        for _, v in artists_map.items():
+            nm = v["name"]
+            score = fuzz.token_set_ratio(target_norm, _norm_text(nm))
+            scored.append((score, nm, v))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        if not scored:
+            self._log(f"[WARN] No valid artists found for {artist} on {date}")
+            return None
+
+        top_score, top_name, top_rec = scored[0]
+
+        if top_score >= headliner_threshold:
+            headliner_name = top_name
+            headliner_songs = top_rec["songs"]
+        else:
+            fallback = max(scored, key=lambda x: len(x[2]["songs"]))
+            headliner_name = fallback[1]
+            headliner_songs = fallback[2]["songs"]
+
+        # Openers
         openers = []
-        for op in openers_blocks:
-            name = (op.get("artist") or {}).get("name")
-            songs = [x.get("name") for x in (op.get("song") or []) if x.get("name")]
-            op_start = op.get("info")
-            op_last_updated = op.get("lastUpdated") or event.get("lastUpdated")
-            openers.append({
-                "name": name,
-                "songs": songs,
-                "startTime": op_start,
-                "lastUpdated": op_last_updated
-            })
+        for score, nm, rec in scored:
+            if nm == headliner_name:
+                continue
+            openers.append(rec)
 
         return {
             "is_festival": False,
-            "eventDate": event.get("eventDate"),
-            "venue": venue,
-            "city": city,
             "headliner": headliner_name,
             "headliner_songs": headliner_songs,
-            "headliner_startTime": headliner_start,
-            "headliner_lastUpdated": headliner_last_updated,
-            "openers": openers
+            "openers": openers,
+            "venue": resolved_venue,
+            "city": resolved_city,
+            "date": date,
         }
