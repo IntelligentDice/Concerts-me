@@ -263,21 +263,37 @@ class PlaylistBuilder:
             # -------------------------
             # CLEAN BAD DATA (FIX #1)
             # -------------------------
-            openers = event_data.get("openers", [])
-            openers = [op for op in openers if op.get("name")]
+            # Fix missing opener names *without discarding the entry*
+            openers = event_data.get("openers", []) or []
+            fixed_openers = []
+            fallback_counter = 1
+
+            for op in openers:
+                name = op.get("name")
+                if not name or name.strip().lower() == "none":
+                    name = f"Unknown Artist {fallback_counter}"
+                    fallback_counter += 1
+                fixed_openers.append({
+                    "name": name,
+                    "songs": op.get("songs", []),
+                    "startTime": op.get("startTime"),
+                    "lastUpdated": op.get("lastUpdated"),
+                })
+
+            openers = fixed_openers
             event_data["openers"] = openers
 
+            # Handle missing headliner *after* openers are fixed
             headliner = event_data.get("headliner")
             headliner_songs = event_data.get("headliner_songs", []) or []
 
-            # Fix missing headliner name
             if not headliner:
                 if openers:
                     headliner = openers[-1]["name"]
                     headliner_songs = openers[-1].get("songs", [])
                     warn(f"[WARN] Missing headliner; using fallback '{headliner}'")
                 else:
-                    warn(f"[WARN] No valid artists found for {artist} on {date}")
+                    warn(f"[WARN] No usable artist data found for {artist} on {date}")
                     continue
 
             # --- Sort openers ---
