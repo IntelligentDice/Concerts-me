@@ -160,11 +160,11 @@ class SpotifyClient:
                     best_match = track_uri
             
             # If we found a good match, stop searching
-            if best_score >= 60:
+            if best_score >= 80:
                 break
         
         # Cache the result
-        if best_match and best_score >= 60:
+        if best_match and best_score >= 80:
             self.cache["song_to_spotify"][cache_key] = best_match
             print(f"[INFO] Matched '{song_name}' with score {best_score:.1f}")
             return best_match
@@ -236,6 +236,10 @@ class SpotifyClient:
             return None
         
         # Create playlist
+        # Spotify has a 300 character limit on descriptions
+        if len(description) > 300:
+            description = description[:297] + "..."
+        
         payload = {
             "name": name,
             "description": description,
