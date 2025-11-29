@@ -125,10 +125,11 @@ def get_setlist_for_event(event):
             venue_score = fuzzy_match_score(venue, setlist_venue) if venue else 100
             city_score = fuzzy_match_score(city, setlist_city)
             
-            # More lenient matching: accept if either venue or city matches well
-            if venue_score >= 60 or city_score >= 80:
+            # Require BOTH venue and city to match reasonably well
+            # Slightly more lenient than before to catch variations
+            if venue_score >= 65 and city_score >= 65:
                 matching_setlists.append(setlist)
-                print(f"[DEBUG] Found setlist: {setlist.get('artist', {}).get('name', 'Unknown')} at {setlist_venue}")
+                print(f"[DEBUG] Found setlist: {setlist.get('artist', {}).get('name', 'Unknown')} at {setlist_venue} (venue: {venue_score:.0f}%, city: {city_score:.0f}%)")
         
         if not matching_setlists:
             print(f"[WARN] No matching setlists found for venue: {venue}")
