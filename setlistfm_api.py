@@ -5,11 +5,30 @@ Handles querying setlists for concerts and festivals.
 
 import os
 import requests
+import time
 from datetime import datetime
 from rapidfuzz import fuzz
 
 
 BASE_URL = "https://api.setlist.fm/rest/1.0"
+
+# Rate limiting: Setlist.fm allows ~2 requests per second
+LAST_REQUEST_TIME = 0
+MIN_REQUEST_INTERVAL = 0.5  # 500ms between requests
+
+
+def rate_limit():
+    """Enforce rate limiting for Setlist.fm API."""
+    global LAST_REQUEST_TIME
+    current_time = time.time()
+    time_since_last = current_time - LAST_REQUEST_TIME
+    
+    if time_since_last < MIN_REQUEST_INTERVAL:
+        sleep_time = MIN_REQUEST_INTERVAL - time_since_last
+        print(f"[DEBUG] Rate limiting: sleeping {sleep_time:.2f}s")
+        time.sleep(sleep_time)
+    
+    LAST_REQUEST_TIME = time.time()
 
 
 def fuzzy_match_score(str1, str2):
@@ -69,6 +88,7 @@ def get_setlist_for_event(event):
     }
     
     try:
+        rate_limit()  # Rate limit before making request
         response = requests.get(search_url, headers=headers, params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -101,8 +121,20 @@ def get_setlist_for_event(event):
         return parse_multi_artist_setlists(matching_setlists, artist, is_festival, event)
         
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] API request failed for {artist}: {e}")
-        return None
+        if "429" in str(e):
+            print(f"[WARN] Rate limited by Setlist.fm API, waiting 2 seconds and retrying...")
+            time.sleep(2)
+            try:
+                response = requests.get(search_url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                setlists = data.get("setlist", [])
+            except Exception as retry_error:
+                print(f"[ERROR] Retry failed for {artist}: {retry_error}")
+                return None
+        else:
+            print(f"[ERROR] API request failed for {artist}: {e}")
+            return None
     except Exception as e:
         print(f"[ERROR] Unexpected error fetching setlist for {artist}: {e}")
         return None
