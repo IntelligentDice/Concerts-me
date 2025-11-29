@@ -49,6 +49,27 @@ def process_events(events, dry_run=False):
             stats["skipped_reasons"].append(reason)
             continue
         
+        # Generate playlist name early to check for duplicates
+        if setlist_data.get("is_festival"):
+            festival_name = setlist_data.get("festival_name", event["artist"])
+            playlist_name = f"{festival_name} - {event['date']}"
+        else:
+            playlist_name = f"{event['artist']} - {event['date']}"
+        
+        playlist_name_trimmed = playlist_name[:100] if len(playlist_name) > 100 else playlist_name
+        
+        # Check if playlist already exists BEFORE matching songs
+        print(f"[INFO] Checking if playlist already exists: {playlist_name_trimmed}")
+        existing_id = spotify.find_playlist_by_name(playlist_name_trimmed)
+        
+        if existing_id:
+            print(f"[INFO] Playlist '{playlist_name_trimmed}' already exists (ID: {existing_id})")
+            print(f"[INFO] Skipping song matching and re-using existing playlist")
+            stats["playlists_updated"] += 1
+            continue
+        
+        print(f"[INFO] Playlist does not exist, will create new one after matching songs")
+        
         # Extract songs from setlist
         all_songs = []
         artists_in_order = []
