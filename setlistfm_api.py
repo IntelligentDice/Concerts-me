@@ -83,18 +83,12 @@ def get_setlist_for_event(event):
     
     search_url = f"{BASE_URL}/search/setlists"
     
-    # Try searching by venue name first (most specific)
-    if venue:
-        params = {
-            "venueName": venue,
-            "date": api_date
-        }
-    else:
-        # Fallback to city search if no venue
-        params = {
-            "cityName": city,
-            "date": api_date
-        }
+    # Search by city and date (venue filtering happens after)
+    # Venue name search is too restrictive and often returns 404
+    params = {
+        "cityName": city,
+        "date": api_date
+    }
     
     try:
         rate_limit()  # Rate limit before making request
@@ -131,8 +125,8 @@ def get_setlist_for_event(event):
             venue_score = fuzzy_match_score(venue, setlist_venue) if venue else 100
             city_score = fuzzy_match_score(city, setlist_city)
             
-            # Must match venue and city reasonably well
-            if venue_score >= 70 and city_score >= 70:
+            # More lenient matching: accept if either venue or city matches well
+            if venue_score >= 60 or city_score >= 80:
                 matching_setlists.append(setlist)
                 print(f"[DEBUG] Found setlist: {setlist.get('artist', {}).get('name', 'Unknown')} at {setlist_venue}")
         
