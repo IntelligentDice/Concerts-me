@@ -79,13 +79,22 @@ def get_setlist_for_event(event):
         return None
     
     # Search for setlists at this venue/city/date to find ALL artists
-    print(f"[DEBUG] Searching for all setlists on {api_date} in {city}")
+    print(f"[DEBUG] Searching for all setlists on {api_date} at {venue} in {city}")
     
     search_url = f"{BASE_URL}/search/setlists"
-    params = {
-        "cityName": city,
-        "date": api_date
-    }
+    
+    # Try searching by venue name first (most specific)
+    if venue:
+        params = {
+            "venueName": venue,
+            "date": api_date
+        }
+    else:
+        # Fallback to city search if no venue
+        params = {
+            "cityName": city,
+            "date": api_date
+        }
     
     try:
         rate_limit()  # Rate limit before making request
@@ -94,6 +103,20 @@ def get_setlist_for_event(event):
         data = response.json()
         
         setlists = data.get("setlist", [])
+        
+        if not setlists:
+            # If venue search failed, try city search as fallback
+            if venue and city:
+                print(f"[DEBUG] No results for venue '{venue}', trying city search: {city}")
+                params = {
+                    "cityName": city,
+                    "date": api_date
+                }
+                rate_limit()
+                response = requests.get(search_url, headers=headers, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                setlists = data.get("setlist", [])
         
         if not setlists:
             print(f"[WARN] No setlists found for {city} on {date}")
